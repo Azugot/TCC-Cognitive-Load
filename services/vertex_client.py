@@ -2,7 +2,6 @@
 import os
 import json
 
-# Imports opcionais (mantêm comportamento do original)
 try:
     import vertexai as _vertexai
     from vertexai.generative_models import GenerativeModel as _VertexGenerativeModel
@@ -12,14 +11,12 @@ except Exception:
     _VertexGenerativeModel = None
     _GcpCredentials = None
 
-# Locais padrão onde o SA pode existir (mesmo do app original)
 DEFAULT_LOCATIONS = [
     "./acquired-router-470921-a3-a19e3f67c416.json"
 ]
 
 
 def _load_vertex_cfg_from_disk():
-    """Carrega o service account JSON do disco, sem UI. Retorna dict cfg ou lança exceção."""
     preset_path = os.environ.get("VERTEX_SA_PATH", "").strip()
     candidate_paths = ([preset_path] if preset_path else []
                        ) + DEFAULT_LOCATIONS
@@ -91,10 +88,21 @@ def _messagesToTranscript(messages):
     return "\n\n".join(lines)
 
 
-def _streamFromVertex(messages, cfg):
+def _streamFromVertex(messages, cfg, adv):
     model = _vertex_init_or_raise(cfg)
     transcript = _messagesToTranscript(messages)
-    resp = model.generate_content(transcript, stream=True)
+    gen_cfg = {}
+    try:
+        gen_cfg = {
+            "temperature": float(adv.get("temperature", 0.7)),
+            "top_p": float(adv.get("top_p", 0.95)),
+            "top_k": int(adv.get("top_k", 40)),
+            "max_output_tokens": int(adv.get("max_tokens", 1024)),
+        }
+    except Exception:
+        gen_cfg = {}
+    resp = model.generate_content(
+        transcript, generation_config=gen_cfg, stream=True)
     for chunk in resp:
         try:
             cands = getattr(chunk, "candidates", None) or []

@@ -1,10 +1,9 @@
 # services/auth_store.py
-import os
 import json
 import hashlib
 
-# Mesmo caminho do demo original (volátil e compartilhado no container)
-HF_USERS_DB = "/tmp/users.json"
+HF_USERS_DB = "/tmp/users.json"  # demo only
+
 
 def _loadUsers():
     try:
@@ -13,6 +12,7 @@ def _loadUsers():
     except Exception:
         return {}
 
+
 def _saveUsers(db):
     try:
         with open(HF_USERS_DB, "w", encoding="utf-8") as f:
@@ -20,5 +20,23 @@ def _saveUsers(db):
     except Exception:
         pass
 
+
 def _hashPw(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+
+
+def _getUserEntry(db, username):
+    """Normaliza entrada para {pw:str, role:str}. Se legado (str), assume role 'aluno'."""
+    entry = (db or {}).get(username)
+    if isinstance(entry, dict):
+        pw = entry.get("pw") or entry.get("password") or ""
+        role = (entry.get("role") or "aluno").lower()
+        return {"pw": pw, "role": role}
+    if isinstance(entry, str):
+        return {"pw": entry, "role": "aluno"}
+    return None
+
+
+def _setUserEntry(db, username, pw_hash, role):
+    db[username] = {"pw": pw_hash, "role": (role or "aluno").lower()}
+    return db
