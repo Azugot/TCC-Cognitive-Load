@@ -1,5 +1,9 @@
 # services/script_builder.py
-def buildCustomScript(assunto, estilo, detalhamento, objetivo, extras):
+def buildCustomScript(assunto, estilo, detalhamento, objetivo, extras, subtemas=None, interesses=None):
+
+    subtemas = subtemas or []
+    interesses = (interesses or "").strip()
+
     lines = [
         "Você é um assistente pedagógico que gera respostas sob medida para o usuário.",
         "Papel principal: Tutor de Programacao",
@@ -40,6 +44,14 @@ def buildCustomScript(assunto, estilo, detalhamento, objetivo, extras):
             "- Linguagem técnica com termos específicos quando pertinente.")
     else:
         lines.append("- Linguagem simples e acessível para iniciantes.")
+
+    if subtemas:
+        lines.append(
+            f"- Priorize os subtemas selecionados pelo aluno: {', '.join(subtemas)}.")
+    if interesses:
+        lines.append(
+            f"- Tente correlacionar com os temas de interesse do aluno: {interesses}.")
+
     if extras:
         lines.append(f"- Preferências adicionais: {extras}")
     return "\n".join(lines)

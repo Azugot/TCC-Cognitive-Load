@@ -9,7 +9,7 @@ from services.auth_store import _loadUsers, _saveUsers, _hashPw, _getUserEntry, 
 from services.docs import extractPdfText, createChatPdf
 from services.script_builder import buildCustomScript
 
-# =============== Chat callbacks e utilidades básicas (inalterado/estendido) ===============
+# ======================== Utilidades ========================
 
 
 def _now_ts():
@@ -19,16 +19,17 @@ def _now_ts():
 def _mk_id(prefix="id"):
     return f"{prefix}_{str(uuid.uuid4())[:8]}"
 
+# ======================== Chat: entrada e saída ========================
+
 
 def addMessage(history, message, docsState, authState, currentChatId, chatsState):
     """Recebe msg do usuário, anexa em 'history' e registra no chatsState (in-memory) para Histórico/Avaliação/Progresso."""
-    # Garantir estruturas
     if not isinstance(docsState, dict):
         docsState = {}
     if not isinstance(chatsState, dict):
         chatsState = {}
 
-    # Criar uma sessão de chat se não existir
+    # cria sessão se não existir
     chat_id = currentChatId or _mk_id("chat")
     if chat_id not in chatsState:
         user = (authState or {}).get("username") or "anon"
@@ -39,15 +40,13 @@ def addMessage(history, message, docsState, authState, currentChatId, chatsState
             "role": role,
             "created_at": _now_ts(),
             "title": f"Chat de {user}",
-            # cada item: {"role": "...", "content": "...", "ts": ...}
             "messages": [],
-            "summary": "",      # pode ser preenchido futuramente
-            "score": None,      # avaliação (professor)
+            "summary": "",
+            "score": None,
             "rubric": None,
             "feedback": None,
         }
 
-    # Processar uploads + texto
     files = message.get("files") if isinstance(message, dict) else []
     text = message.get("text") if isinstance(message, dict) else None
 
@@ -107,12 +106,13 @@ def bot(history, docsState, scriptState, advState, currentChatId, chatsState):
         for delta in _streamFromVertex(messages, VERTEX_CFG, adv):
             history[-1]["content"] += delta
             yield history
-        # Ao final do stream, salva mensagem no log do chat
+        # salva no log do chat
         if currentChatId and isinstance(chatsState, dict) and currentChatId in chatsState:
             chatsState[currentChatId]["messages"].append(
-                {"role": "assistant", "content": history[-1]["content"], "ts": _now_ts()})
-            # título simples a partir da primeira user msg
-            if not chatsState[currentChatId].get("title") and len(history) >= 2:
+                {"role": "assistant",
+                    "content": history[-1]["content"], "ts": _now_ts()}
+            )
+            if not chatsState[currentChatId].get("title"):
                 first_user_msg = next(
                     (m.get("content") for m in history if m.get("role") == "user"), "")
                 if first_user_msg:
@@ -121,16 +121,24 @@ def bot(history, docsState, scriptState, advState, currentChatId, chatsState):
         history[-1]["content"] = f"[ERRO Vertex: {e}]"
         if currentChatId and isinstance(chatsState, dict) and currentChatId in chatsState:
             chatsState[currentChatId]["messages"].append(
-                {"role": "assistant", "content": history[-1]["content"], "ts": _now_ts()})
+                {"role": "assistant",
+                    "content": history[-1]["content"], "ts": _now_ts()}
+            )
         yield history
 
 
 def clearChat():
     return []
 
+# ======================== Script builder (pessoal) ========================
+
 
 def updateCustomScript(assunto, estilo, detalhamento, objetivo, extras, scriptState):
-    return buildCustomScript(assunto, estilo, detalhamento, objetivo, extras)
+    # Agora passamos parâmetros estruturados (subtemas/interesses) como None por compatibilidade
+    return buildCustomScript(
+        assunto, estilo, detalhamento, objetivo, extras,
+        subtemas=None, interesses=None
+    )
 
 
 def updateAdvOptions(temperature, topP, topK, maxTokens, advState):
@@ -151,7 +159,7 @@ def validateFields(assunto, estilo, detalhamento, objetivo):
              detalhamento, objetivo and objetivo.strip()])
     return gr.Button(interactive=bool(ok))
 
-# ====================== Render helpers para páginas do Admin ======================
+# ====================== Helpers de renderização / listas ======================
 
 
 def _render_classrooms_md(classrooms):
@@ -165,7 +173,8 @@ def _render_classrooms_md(classrooms):
         tcount = len(members.get("teachers", []))
         scount = len(members.get("students", []))
         lines.append(
-            f"- **{c['name']}** ({status}) — tema: _{c.get('theme_name', '?')}_ {lock} — id: `{c['id']}` — 👩‍🏫 {tcount} | 🎓 {scount}")
+            f"- **{c['name']}** ({status}) — tema: _{c.get('theme_name', '?')}_ {lock} — id: `{c['id']}` — 👩‍🏫 {tcount} | 🎓 {scount}"
+        )
     return "\n".join(lines)
 
 
@@ -198,7 +207,8 @@ def _render_history_md(chats_map, owner=None):
         title = chat.get("title") or cid
         tag = f" (nota: {score})" if score is not None else ""
         rows.append(
-            f"- **{title}** — id: `{cid}` — autor: `{chat.get('owner')}` — {time.strftime('%d/%m %H:%M', time.localtime(ts))}{tag}")
+            f"- **{title}** — id: `{cid}` — autor: `{chat.get('owner')}` — {time.strftime('%d/%m %H:%M', time.localtime(ts))}{tag}"
+        )
     return "### Conversas registradas\n" + ("\n".join(rows) if rows else "⚠️ Nenhuma conversa para o filtro aplicado.")
 
 
@@ -212,31 +222,9 @@ def _render_eval_md(chat):
         prev.append(f"- Rubrica: {chat['rubric']}")
     if chat.get("feedback"):
         prev.append(f"- Feedback: {chat['feedback']}")
-    return "### Avaliação atual\n" + ("\n".join(prev) if prev else "Sem avaliação registrada."
+    return "### Avaliação atual\n" + ("\n".join(prev) if prev else "Sem avaliação registrada.")
 
-
-                                      )
-
-
-def _render_progress_md(chats_map, user_filter=None):
-    total = 0
-    answered = 0
-    evaluated = 0
-    for chat in (chats_map or {}).values():
-        if user_filter and chat.get("owner") != user_filter:
-            continue
-        total += 1
-        if any(m for m in chat["messages"] if m["role"] == "assistant"):
-            answered += 1
-        if chat.get("score") is not None:
-            evaluated += 1
-    lines = [
-        "### Indicadores gerais",
-        f"- Conversas totais: **{total}**",
-        f"- Conversas com resposta da IA: **{answered}**",
-        f"- Conversas avaliadas: **{evaluated}**",
-    ]
-    return "\n".join(lines)
+# ========= Helpers de professor/aluno =========
 
 
 def _teacher_username(auth):
@@ -244,7 +232,6 @@ def _teacher_username(auth):
 
 
 def _teacher_classes(auth, classrooms):
-    """Salas em que o professor logado consta como teacher (owner ou co-teacher)."""
     me = _teacher_username(auth)
     out = []
     for c in (classrooms or []):
@@ -278,10 +265,47 @@ def _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class):
     return dd, gr.update(choices=all_names, value=active), _render_subjects_md(subjects_by_class, selected_id, classrooms or [])
 
 
+def _student_username(auth):
+    return ((auth or {}).get("username") or "").strip().lower()
+
+
+def _student_classes(auth, classrooms):
+    me = _student_username(auth)
+    out = []
+    for c in (classrooms or []):
+        students = (c.get("members", {}) or {}).get("students", []) or []
+        if me and me in [s.strip().lower() for s in students]:
+            out.append(c)
+    return out
+
+
+def _render_class_details(cls_id, classrooms, subjects_by_class):
+    c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
+    if not c:
+        return "⚠️ Selecione uma sala."
+    teachers = ", ".join(c["members"]["teachers"]) or "—"
+    students = ", ".join(c["members"]["students"]) or "—"
+    theme = c.get("theme_name") or c["name"]
+    subs = subjects_by_class.get(cls_id, [])
+    subs_txt = ", ".join([s["name"]
+                         for s in subs if s.get("active", True)]) or "—"
+    return (
+        f"## {c['name']}\n"
+        f"- **Tema da sala:** _{theme}_\n"
+        f"- 👩‍🏫 **Professores:** {teachers}\n"
+        f"- 🎓 **Alunos:** {students}\n"
+        f"- 🧩 **Subtemas disponíveis:** {subs_txt}\n"
+    )
+
+
+def _student_subtheme_choices(cls_id, subjects_by_class):
+    lst = subjects_by_class.get(cls_id, [])
+    return [s["name"] for s in lst if s.get("active", True)]
+
+
 # ================================== APP / UI ==================================
 with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # Estados principais
-    # role adicionado ao logar
     authState = gr.State({"isAuth": False, "username": None})
     docsState = gr.State({})
     scriptState = gr.State(
@@ -294,10 +318,10 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     classroomsState = gr.State([])
     # {class_id: [{"name":str, "active":bool}, ...]}
     subjectsState = gr.State({})
-    chatsState = gr.State({})              # {chat_id: {...}}
-    currentChatId = gr.State(None)         # chat_id atual
-    # home|classrooms|subjects|history|evaluate|progress|admin
+    chatsState = gr.State({})          # {chat_id: {...}}
+    currentChatId = gr.State(None)     # chat_id atual
     adminNavState = gr.State({"page": "home"})
+    studentSelectedClass = gr.State(None)   # id da sala escolhida pelo aluno
 
     # Header
     header_msg = "### 👋 Bem-vindo! Faça login para continuar."
@@ -334,20 +358,20 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             btnGoCustomize = gr.Button(
                 "⚙️ Personalizar o Chat", variant="primary")
             btnLogout1 = gr.Button("Sair")
+        # visível só para aluno/admin
+        with gr.Row(visible=False) as studentRow:
+            btnStudentRooms = gr.Button("🎒 Minhas Salas", variant="secondary")
+        # visível só para professor
         with gr.Row(visible=False) as profRow:
             btnViewStudents = gr.Button(
                 "👥 Ver alunos cadastrados", variant="secondary")
+            btnTeacherClassrooms = gr.Button(
+                "🏫 Minhas Salas", variant="primary")
         studentsOut = gr.Markdown("")
 
-    with gr.Row(visible=False) as profRow:
-        btnViewStudents = gr.Button(
-            "👥 Ver alunos cadastrados", variant="secondary")
-        btnTeacherClassrooms = gr.Button("🏫 Minhas Salas", variant="primary")
-
-    # Página do Professor (salas + subtemas)
+    # ===== Página do Professor (salas + subtemas) =====
     with gr.Column(visible=False) as viewTeacher:
         teacherTitle = gr.Markdown("## 🏫 Minhas Salas (Professor)")
-        # Criar sala
         with gr.Group():
             with gr.Row():
                 tClsName = gr.Textbox(
@@ -359,12 +383,10 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 tClsLocked = gr.Checkbox(value=True, label="Tema travado")
                 btnTeacherAddClass = gr.Button(
                     "➕ Criar sala", variant="primary")
-        # Seleção de sala (somente do professor)
         with gr.Row():
             tSelectClass = gr.Dropdown(
                 choices=[], label="Minhas salas", value=None)
             btnTeacherRefresh = gr.Button("🔄")
-        # Membros
         with gr.Accordion("Membros (Alunos)", open=False):
             with gr.Row():
                 tAddStudent = gr.Textbox(label="Adicionar aluno (username)")
@@ -373,7 +395,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 tRmUser = gr.Textbox(label="Remover usuário (username)")
                 btnTeacherRmUser = gr.Button("🗑️ Remover")
             tMembersMd = gr.Markdown("")
-        # Subtemas
         with gr.Accordion("Subtemas", open=False):
             with gr.Row():
                 tSubjName = gr.Textbox(
@@ -384,12 +405,11 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                     choices=[], label="Ativar/desativar subtemas", value=[])
                 btnTeacherApplyActive = gr.Button("✅ Aplicar ativações")
             tSubjectsMd = gr.Markdown("")
-        # Lista das salas do professor
         tClassroomsMd = gr.Markdown("")
         with gr.Row():
             btnTeacherBack = gr.Button("← Voltar à Home")
 
-    # ===== Home (Admin) + Nav superior =====
+    # ===== Home (Admin) + Nav =====
     with gr.Column(visible=False) as viewHomeAdmin:
         adminGreet = gr.Markdown("## 🧭 Home do Admin")
         with gr.Row():
@@ -400,7 +420,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             navProgress = gr.Button("📊 Progresso")
             navAdmin = gr.Button("🛠️ Administração")
             btnLogoutAdmin = gr.Button("Sair")
-
         gr.Markdown("---\n#### Áreas disponíveis dentro da Home do Admin\n")
         with gr.Row():
             with gr.Column():
@@ -411,7 +430,18 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 gr.Markdown("### 👩‍🏫 Área do Professor (demonstração)")
                 btnAdminListStudents = gr.Button("👥 Ver alunos cadastrados")
 
-    # ===== PÁGINA: Gerenciar Salas =====
+    # ===== Página: Administração (placeholder) =====
+    with gr.Column(visible=False) as viewAdminPg:
+        gr.Markdown("## 🛠️ Administração (Placeholder)")
+        gr.Markdown(
+            "- Gerenciar usuários/roles (futuro)\n"
+            "- Parâmetros globais do sistema (futuro)\n"
+            "- Logs/telemetria (futuro)\n"
+        )
+        with gr.Row():
+            adminPgBack = gr.Button("← Voltar à Home do Admin")
+
+    # ===== PÁGINA: Gerenciar Salas (Admin) =====
     with gr.Column(visible=False) as viewClassrooms:
         gr.Markdown("## 🏫 Gerenciar Salas")
         with gr.Group():
@@ -457,18 +487,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         with gr.Row():
             clsBackAdminHome = gr.Button("← Voltar à Home do Admin")
 
-            # ===== Página: Administração (placeholder) =====
-    with gr.Column(visible=False) as viewAdminPg:
-        gr.Markdown("## 🛠️ Administração (Placeholder)")
-        gr.Markdown(
-            "- Gerenciar usuários/roles (futuro)\n"
-            "- Parâmetros globais do sistema (futuro)\n"
-            "- Logs/telemetria (futuro)\n"
-        )
-        with gr.Row():
-            adminPgBack = gr.Button("← Voltar à Home do Admin")
-
-    # ===== PÁGINA: Subtemas =====
+    # ===== PÁGINA: Subtemas (Admin) =====
     with gr.Column(visible=False) as viewSubjects:
         gr.Markdown("## 🧩 Gerenciar Subtemas por Sala")
         with gr.Row():
@@ -486,7 +505,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         with gr.Row():
             subjBackAdminHome = gr.Button("← Voltar à Home do Admin")
 
-    # ===== PÁGINA: Histórico/Resumo de Chats =====
+    # ===== PÁGINA: Histórico =====
     with gr.Column(visible=False) as viewHistory:
         gr.Markdown("## 🗂️ Histórico de Chats")
         with gr.Row():
@@ -497,7 +516,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         with gr.Row():
             histBack = gr.Button("← Voltar à Home do Admin")
 
-    # ===== PÁGINA: Avaliação de Chats (Professores) =====
+    # ===== PÁGINA: Avaliação =====
     with gr.Column(visible=False) as viewEvaluate:
         gr.Markdown("## 📝 Avaliar Chats")
         with gr.Row():
@@ -515,7 +534,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         with gr.Row():
             evalBack = gr.Button("← Voltar à Home do Admin")
 
-    # ===== PÁGINA: Progresso/Relatórios =====
+    # ===== PÁGINA: Progresso =====
     with gr.Column(visible=False) as viewProgress:
         gr.Markdown("## 📊 Progresso e Relatórios")
         with gr.Row():
@@ -526,7 +545,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         with gr.Row():
             progBack = gr.Button("← Voltar à Home do Admin")
 
-    # ===== Studio (customização + chat) =====
+    # ===== PÁGINA: Studio (chat pessoal) =====
     with gr.Column(visible=False) as viewStudio:
         with gr.Row():
             gr.Markdown("## 🧩 Customização do Chat")
@@ -592,11 +611,9 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             lambda: (gr.update(visible=True), gr.update(visible=False), []),
             inputs=None, outputs=[configCol, chatCol, chatbot]
         )
-
         backToConfigBtn.click(lambda: (gr.update(visible=True), gr.update(visible=False)),
                               inputs=None, outputs=[configCol, chatCol])
 
-        # Chat flow (agora registra também em chatsState)
         chatMsg = chatInput.submit(
             addMessage,
             inputs=[chatbot, chatInput, docsState,
@@ -621,117 +638,57 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 return (gr.update(visible=False), gr.update(visible=True), gr.update(visible=False))
             else:
                 return (gr.update(visible=False), gr.update(visible=False), gr.update(visible=True))
-
         btnBackHome.click(_back_home, inputs=authState, outputs=[
                           viewStudio, viewHomeAdmin, viewHome])
 
-    def teacher_add_classroom(name, theme, desc, locked, classrooms, auth):
-        name = (name or "").strip()
-        theme = (theme or "").strip()
-        me = _teacher_username(auth)
-        if not me:
-            return classrooms, "⚠️ Faça login.", gr.update(), gr.update(), ""
-        if not name:
-            return classrooms, "⚠️ Informe um nome para a sala.", gr.update(), gr.update(), ""
-        classroom = {
-            "id": _mk_id("cls"),
-            "name": name,
-            "description": desc or "",
-            "theme_name": theme or name,
-            "theme_locked": bool(locked),
-            "is_archived": False,
-            # professor criador já entra como teacher
-            "members": {"teachers": [me], "students": []},
-            "owner": me
-        }
-        new_list = list(classrooms or []) + [classroom]
-        md = _render_classrooms_md(_teacher_classes(auth, new_list))
-        dd = gr.update(choices=_teacher_choices(auth, new_list))
-        return new_list, md, dd, dd, "✅ Sala criada."
+    # ===== PÁGINA: Aluno → Minhas Salas =====
+    with gr.Column(visible=False) as viewStudentRooms:
+        gr.Markdown("## 🎒 Minhas Salas")
+        with gr.Row():
+            stRoomSelect = gr.Dropdown(
+                choices=[], label="Selecione uma sala", value=None)
+            stRoomsRefresh = gr.Button("🔄")
+        stRoomInfo = gr.Markdown("")
+        with gr.Row():
+            stEnterRoomChatSetup = gr.Button(
+                "💬 Entrar no chat da sala", variant="primary")
+            stRoomsBack = gr.Button("← Voltar à Home")
 
-    def teacher_refresh(auth, classrooms, subjects_by_class):
-        md = _render_classrooms_md(_teacher_classes(auth, classrooms or []))
-        dd = gr.update(choices=_teacher_choices(auth, classrooms or []))
-        # Também atualiza a lista de subtemas (sem sala = vazio)
-        return md, dd
-
-    def teacher_add_student(cls_id, uname, classrooms, auth):
-        me = _teacher_username(auth)
-        uname = (uname or "").strip()
-        if not cls_id or not uname:
-            return "⚠️ Informe sala e username."
-        for c in (classrooms or []):
-            if c["id"] == cls_id:
-                teachers = [t.strip().lower()
-                            for t in c["members"]["teachers"]]
-                if me not in teachers:
-                    return "⛔ Você não é professor desta sala."
-                if uname not in c["members"]["students"]:
-                    c["members"]["students"].append(uname)
-                return _render_teacher_members_md(cls_id, classrooms)
-        return "⚠️ Sala não encontrada."
-
-    def teacher_rm_user(cls_id, uname, classrooms, auth):
-        me = _teacher_username(auth)
-        uname = (uname or "").strip()
-        if not cls_id or not uname:
-            return "⚠️ Informe sala e username."
-        for c in (classrooms or []):
-            if c["id"] == cls_id:
-                teachers = [t.strip().lower()
-                            for t in c["members"]["teachers"]]
-                if me not in teachers:
-                    return "⛔ Você não é professor desta sala."
-                # professor só remove alunos (não remove professores aqui)
-                c["members"]["students"] = [
-                    u for u in c["members"]["students"] if u != uname]
-                return _render_teacher_members_md(cls_id, classrooms)
-        return "⚠️ Sala não encontrada."
-
-    def teacher_subjects_refresh(auth, classrooms, selected_id, subjects_by_class):
-        return _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class)
-
-    def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
-        me = _teacher_username(auth)
-        if not selected_id:
-            return subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala."
-        # verificar se é teacher da sala
-        c = next((x for x in (classrooms or [])
-                 if x["id"] == selected_id), None)
-        if not c:
-            return subjects_by_class, gr.update(), gr.update(), "⚠️ Sala não encontrada."
-        if me not in [t.strip().lower() for t in c["members"]["teachers"]]:
-            return subjects_by_class, gr.update(), gr.update(), "⛔ Você não é professor desta sala."
-        subj = (subj or "").strip()
-        if not subj:
-            return subjects_by_class, gr.update(), gr.update(), "⚠️ Informe o nome do subtema."
-        lst = list(subjects_by_class.get(selected_id, []))
-        if any(s["name"].lower() == subj.lower() for s in lst):
-            return subjects_by_class, gr.update(), gr.update(), "⚠️ Esse subtema já existe."
-        lst.append({"name": subj, "active": True})
-        new_map = dict(subjects_by_class)
-        new_map[selected_id] = lst
-        dd, chk, md = _subjects_choices_teacher(
-            auth, classrooms, selected_id, new_map)
-        return new_map, dd, chk, md
-
-    def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classrooms):
-        if not selected_id:
-            return subjects_by_class, "ℹ️ Selecione uma sala."
-        c = next((x for x in (classrooms or [])
-                 if x["id"] == selected_id), None)
-        if not c:
-            return subjects_by_class, "⚠️ Sala não encontrada."
-        me = _teacher_username(auth)
-        if me not in [t.strip().lower() for t in c["members"]["teachers"]]:
-            return subjects_by_class, "⛔ Você não é professor desta sala."
-        lst = list(subjects_by_class.get(selected_id, []))
-        names = set((actives or []))
-        for s in lst:
-            s["active"] = s["name"] in names
-        new_map = dict(subjects_by_class)
-        new_map[selected_id] = lst
-        return new_map, _render_subjects_md(new_map, selected_id, classrooms or [])
+    # ===== PÁGINA: Aluno → Setup do Chat da Sala =====
+    with gr.Column(visible=False) as viewStudentSetup:
+        stSetupTitle = gr.Markdown("## 🧩 Configurar Chat da Sala")
+        with gr.Row():
+            stSetupBackRooms = gr.Button("← Voltar às minhas salas")
+        with gr.Row():
+            with gr.Column(scale=1) as stCfgCol:
+                stAssunto = gr.Textbox(
+                    label="1) Assunto (tema da sala)", interactive=False)
+                stSubthemes = gr.CheckboxGroup(choices=[], label="2) Subtemas")
+                stEstilo = gr.Radio(label="3) Estilo de linguagem", choices=[
+                                    "técnicas", "simples"], value="simples")
+                stDetalhamento = gr.Radio(label="4) Nível de detalhamento", choices=[
+                                          "detalhadas", "curtas"], value="detalhadas")
+                stObjetivo = gr.Textbox(
+                    label="5) Objetivo", placeholder="Ex: Revisar para prova de estruturas de dados")
+                stInteresses = gr.Textbox(
+                    label="6) Temas de interesse", placeholder="Ex: futebol, games, música")
+                gr.Markdown(
+                    "_Aprenda melhor e de forma mais intuitiva correlacionando com um assunto que você conhece!_")
+                stSubmit = gr.Button(
+                    "Aplicar Configuração da Sala", variant="primary", interactive=True)
+            with gr.Column(scale=2, visible=False) as stChatCol:
+                stProvider = gr.Markdown(
+                    "**Chat da Sala** — usa seu tema, subtemas e interesses.")
+                stChatbot = gr.Chatbot(
+                    label="Chat (Sala)", type="messages", height=420)
+                with gr.Row():
+                    stClear = gr.Button("Limpar chat")
+                    stExport = gr.Button("Exportar conversa (PDF)")
+                stBackToSetup = gr.Button(
+                    "⬅️ Voltar para configuração da sala")
+                stChatInput = gr.MultimodalTextbox(
+                    show_label=False, placeholder="Digite sua mensagem ou envie um PDF...", sources=["upload"], interactive=True
+                )
 
     # ======================== Navegação / Autenticação ========================
 
@@ -744,9 +701,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             f"[NAV] _route_home: isAuth={is_auth} user='{user}' role='{role}'")
 
         if not is_auth:
-            # mantém na tela de login
             return (
-                # header
                 gr.update(
                     value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
                 gr.update(visible=True),   # viewLogin
@@ -754,7 +709,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 gr.update(visible=False),  # viewHomeAdmin
                 gr.update(value="")        # homeGreet
             )
-
         role = str(role).lower()
         header_txt = f"### 👋 Olá, **{user}**! (perfil: {role})"
         if role == "admin":
@@ -779,22 +733,26 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         is_prof = (str(role).lower() == "professor")
         return gr.update(visible=is_prof), gr.update(value="")
 
+    def _studentUi(auth):
+        role = (auth or {}).get("role", "aluno")
+        is_student_or_admin = str(role).lower() in ("aluno", "admin")
+        return gr.update(visible=is_student_or_admin)
+
+    # ======== Auth ========
+
     def doRegister(username, password, role, authState):
         uname = (username or "").strip().lower()
         pw = (password or "").strip()
         print(f"[AUTH] doRegister: uname='{uname}' role='{role}'")
         if not uname or not pw:
             return gr.update(value="⚠️ Informe usuário e senha."), authState
-
         db = _loadUsers()
         if uname in db:
             print(f"[AUTH] doRegister: usuário já existe -> {uname}")
             return gr.update(value="⚠️ Usuário já existe."), authState
-
         role = (role or "aluno").strip().lower()
         _setUserEntry(db, uname, _hashPw(pw), role)
         _saveUsers(db)
-
         authState = {"isAuth": True, "username": uname, "role": role}
         print(f"[AUTH] doRegister: registrado e logado -> {authState}")
         return gr.update(value=f"✅ Registrado e logado como **{uname}** (perfil: {role})."), authState
@@ -805,17 +763,14 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         print(f"[AUTH] doLogin: uname='{uname}'")
         if not uname or not pw:
             return gr.update(value="⚠️ Informe usuário e senha."), authState
-
         db = _loadUsers()
         entry = _getUserEntry(db, uname)
         if not entry:
             print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
             return gr.update(value="❌ Usuário ou senha incorretos."), authState
-
         if entry.get("pw") != _hashPw(pw):
             print(f"[AUTH] doLogin: senha incorreta -> {uname}")
             return gr.update(value="❌ Usuário ou senha incorretos."), authState
-
         role = (entry.get("role") or "aluno").lower()
         authState = {"isAuth": True, "username": uname, "role": role}
         print(f"[AUTH] doLogin: sucesso -> {authState}")
@@ -854,7 +809,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         bullet = "\n".join([f"- {s}" for s in students])
         return f"### Alunos cadastrados ({len(students)})\n\n{bullet}"
 
-    # ======== Admin: Navegação entre páginas ========
+    # ======== Admin: Nav entre páginas ========
     def _go_admin(page):
         vis = {
             "home":     (True,  False, False, False, False, False, False),
@@ -887,7 +842,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     navAdmin.click(lambda: _go_admin("admin"),
                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
-    # ======== PÁGINA: Salas (CRUD + membros em memória) ========
+    # ======== Admin: Salas (CRUD) ========
     def _refresh_cls_dropdown(classrooms):
         choices = [(c["name"], c["id"]) for c in (classrooms or [])]
         return gr.update(choices=choices), gr.update(choices=choices)
@@ -991,18 +946,16 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 return _render_members_md(cls_id, classrooms)
         return "⚠️ Sala não encontrada."
 
-    btnAddClass.click(add_classroom,
-                      inputs=[clsName, clsTheme, clsDesc,
-                              clsLocked, classroomsState],
+    btnAddClass.click(add_classroom, inputs=[clsName, clsTheme, clsDesc, clsLocked, classroomsState],
                       outputs=[classroomsState, classroomsMd, clsSelect, membClass])
     btnRefreshCls.click(refresh_classrooms, inputs=[classroomsState], outputs=[
                         classroomsMd, clsSelect, membClass])
-    clsSelect.change(load_cls_for_edit, inputs=[clsSelect, classroomsState], outputs=[
-                     eName, eTheme, eDesc, eLocked, eArchived, classroomsMd])
-    btnSaveCls.click(save_cls, inputs=[clsSelect, eName, eTheme, eDesc, eLocked,
-                     eArchived, classroomsState], outputs=[classroomsState, classroomsMd])
-    btnDeleteCls.click(delete_cls, inputs=[clsSelect, classroomsState, subjectsState], outputs=[
-                       classroomsState, subjectsState, classroomsMd])
+    clsSelect.change(load_cls_for_edit, inputs=[clsSelect, classroomsState],
+                     outputs=[eName, eTheme, eDesc, eLocked, eArchived, classroomsMd])
+    btnSaveCls.click(save_cls, inputs=[clsSelect, eName, eTheme, eDesc, eLocked, eArchived, classroomsState],
+                     outputs=[classroomsState, classroomsMd])
+    btnDeleteCls.click(delete_cls, inputs=[clsSelect, classroomsState, subjectsState],
+                       outputs=[classroomsState, subjectsState, classroomsMd])
     membClass.change(lambda cid, cls: _render_members_md(cid, cls), inputs=[
                      membClass, classroomsState], outputs=[membersMd])
     btnAddTeacher.click(add_teacher, inputs=[
@@ -1013,14 +966,118 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                     membClass, rmUser, classroomsState], outputs=[membersMd])
     clsBackAdminHome.click(lambda: _go_admin("home"),
                            outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
-    # Navegação Professor
+
+    # ======== Professor: Navegação e ações ========
     btnTeacherClassrooms.click(lambda: (gr.update(visible=False), gr.update(visible=True)),
-                               inputs=None, outputs=[viewHome, viewTeacher])
-
+                               outputs=[viewHome, viewTeacher])
     btnTeacherBack.click(lambda: (gr.update(visible=True), gr.update(visible=False)),
-                         inputs=None, outputs=[viewHome, viewTeacher])
+                         outputs=[viewHome, viewTeacher])
 
-    # Criar sala (professor)
+    def teacher_add_classroom(name, theme, desc, locked, classrooms, auth):
+        name = (name or "").strip()
+        theme = (theme or "").strip()
+        me = _teacher_username(auth)
+        if not me:
+            return classrooms, "⚠️ Faça login.", gr.update(), gr.update(), ""
+        if not name:
+            return classrooms, "⚠️ Informe um nome para a sala.", gr.update(), gr.update(), ""
+        classroom = {
+            "id": _mk_id("cls"),
+            "name": name,
+            "description": desc or "",
+            "theme_name": theme or name,
+            "theme_locked": bool(locked),
+            "is_archived": False,
+            "members": {"teachers": [me], "students": []},  # teacher criador
+            "owner": me
+        }
+        new_list = list(classrooms or []) + [classroom]
+        md = _render_classrooms_md(_teacher_classes(auth, new_list))
+        dd = gr.update(choices=_teacher_choices(auth, new_list))
+        return new_list, md, dd, dd, "✅ Sala criada."
+
+    def teacher_refresh(auth, classrooms, subjects_by_class):
+        md = _render_classrooms_md(_teacher_classes(auth, classrooms or []))
+        dd = gr.update(choices=_teacher_choices(auth, classrooms or []))
+        return md, dd
+
+    def teacher_add_student(cls_id, uname, classrooms, auth):
+        me = _teacher_username(auth)
+        uname = (uname or "").strip()
+        if not cls_id or not uname:
+            return "⚠️ Informe sala e username."
+        for c in (classrooms or []):
+            if c["id"] == cls_id:
+                teachers = [t.strip().lower()
+                            for t in c["members"]["teachers"]]
+                if me not in teachers:
+                    return "⛔ Você não é professor desta sala."
+                if uname not in c["members"]["students"]:
+                    c["members"]["students"].append(uname)
+                return _render_teacher_members_md(cls_id, classrooms)
+        return "⚠️ Sala não encontrada."
+
+    def teacher_rm_user(cls_id, uname, classrooms, auth):
+        me = _teacher_username(auth)
+        uname = (uname or "").strip()
+        if not cls_id or not uname:
+            return "⚠️ Informe sala e username."
+        for c in (classrooms or []):
+            if c["id"] == cls_id:
+                teachers = [t.strip().lower()
+                            for t in c["members"]["teachers"]]
+                if me not in teachers:
+                    return "⛔ Você não é professor desta sala."
+                c["members"]["students"] = [
+                    u for u in c["members"]["students"] if u != uname]
+                return _render_teacher_members_md(cls_id, classrooms)
+        return "⚠️ Sala não encontrada."
+
+    def teacher_subjects_refresh(auth, classrooms, selected_id, subjects_by_class):
+        return _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class)
+
+    def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
+        me = _teacher_username(auth)
+        if not selected_id:
+            return subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala."
+        c = next((x for x in (classrooms or [])
+                 if x["id"] == selected_id), None)
+        if not c:
+            return subjects_by_class, gr.update(), gr.update(), "⚠️ Sala não encontrada."
+        if me not in [t.strip().lower() for t in c["members"]["teachers"]]:
+            return subjects_by_class, gr.update(), gr.update(), "⛔ Você não é professor desta sala."
+        subj = (subj or "").strip()
+        if not subj:
+            return subjects_by_class, gr.update(), gr.update(), "⚠️ Informe o nome do subtema."
+        lst = list(subjects_by_class.get(selected_id, []))
+        if any(s["name"].lower() == subj.lower() for s in lst):
+            return subjects_by_class, gr.update(), gr.update(), "⚠️ Esse subtema já existe."
+        lst.append({"name": subj, "active": True})
+        new_map = dict(subjects_by_class)
+        new_map[selected_id] = lst
+        dd, chk, md = _subjects_choices_teacher(
+            auth, classrooms, selected_id, new_map)
+        return new_map, dd, chk, md
+
+    def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classrooms):
+        if not selected_id:
+            return subjects_by_class, "ℹ️ Selecione uma sala."
+        c = next((x for x in (classrooms or [])
+                 if x["id"] == selected_id), None)
+        if not c:
+            return subjects_by_class, "⚠️ Sala não encontrada."
+        me = _teacher_username(auth)
+        if me not in [t.strip().lower() for t in c["members"]["teachers"]]:
+            return subjects_by_class, "⛔ Você não é professor desta sala."
+        lst = list(subjects_by_class.get(selected_id, []))
+        names = set((actives or []))
+        for s in lst:
+            s["active"] = s["name"] in names
+        new_map = dict(subjects_by_class)
+        new_map[selected_id] = lst
+        return new_map, _render_subjects_md(new_map, selected_id, classrooms or [])
+
+    # Encadeamentos do Professor
     btnTeacherAddClass.click(
         teacher_add_classroom,
         inputs=[tClsName, tClsTheme, tClsDesc,
@@ -1028,59 +1085,34 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         outputs=[classroomsState, tClassroomsMd,
                  tSelectClass, tSelectClass, teacherTitle]
     )
+    btnTeacherRefresh.click(teacher_refresh, inputs=[authState, classroomsState, subjectsState],
+                            outputs=[tClassroomsMd, tSelectClass])
 
-    # Refresh salas do professor
-    btnTeacherRefresh.click(
-        teacher_refresh,
-        inputs=[authState, classroomsState, subjectsState],
-        outputs=[tClassroomsMd, tSelectClass]
-    )
-
-    # Ao trocar sala, atualizar membros e subtemas
     def _teacher_on_select(auth, classrooms, selected_id, subjects_by_class):
         md_members = _render_teacher_members_md(selected_id, classrooms)
         dd, chk, md_subjects = _subjects_choices_teacher(
             auth, classrooms, selected_id, subjects_by_class)
         return md_members, dd, chk, md_subjects
+    tSelectClass.change(_teacher_on_select, inputs=[authState, classroomsState, tSelectClass, subjectsState],
+                        outputs=[tMembersMd, tSelectClass, tActiveList, tSubjectsMd])
 
-    tSelectClass.change(
-        _teacher_on_select,
-        inputs=[authState, classroomsState, tSelectClass, subjectsState],
-        outputs=[tMembersMd, tSelectClass, tActiveList, tSubjectsMd]
-    )
+    btnTeacherAddStudent.click(teacher_add_student, inputs=[tSelectClass, tAddStudent, classroomsState, authState],
+                               outputs=[tMembersMd])
+    btnTeacherRmUser.click(teacher_rm_user, inputs=[tSelectClass, tRmUser, classroomsState, authState],
+                           outputs=[tMembersMd])
+    btnTeacherAddSubj.click(teacher_add_subject,
+                            inputs=[authState, tSelectClass, tSubjName,
+                                    subjectsState, classroomsState],
+                            outputs=[subjectsState, tSelectClass, tActiveList, tSubjectsMd])
+    btnTeacherApplyActive.click(teacher_apply_active,
+                                inputs=[authState, tSelectClass, tActiveList,
+                                        subjectsState, classroomsState],
+                                outputs=[subjectsState, tSubjectsMd])
 
-    # Membros (alunos)
-    btnTeacherAddStudent.click(
-        teacher_add_student,
-        inputs=[tSelectClass, tAddStudent, classroomsState, authState],
-        outputs=[tMembersMd]
-    )
-    btnTeacherRmUser.click(
-        teacher_rm_user,
-        inputs=[tSelectClass, tRmUser, classroomsState, authState],
-        outputs=[tMembersMd]
-    )
-
-    # Subtemas
-    btnTeacherAddSubj.click(
-        teacher_add_subject,
-        inputs=[authState, tSelectClass, tSubjName,
-                subjectsState, classroomsState],
-        outputs=[subjectsState, tSelectClass, tActiveList, tSubjectsMd]
-    )
-    btnTeacherApplyActive.click(
-        teacher_apply_active,
-        inputs=[authState, tSelectClass, tActiveList,
-                subjectsState, classroomsState],
-        outputs=[subjectsState, tSubjectsMd]
-    )
-
-    # ======== PÁGINA: Subtemas (lista + ativação) ========
-
+    # ======== PÁGINA: Subtemas (Admin) ========
     def _subjects_choices(classrooms, selected_id, subjects_by_class):
-        # Atualiza dropdown e lista + checkbox de ativos
-        dd = gr.update(choices=[(c["name"], c["id"]) for c in (
-            classrooms or [])], value=selected_id if selected_id else None)
+        dd = gr.update(choices=[(c["name"], c["id"]) for c in (classrooms or [])],
+                       value=selected_id if selected_id else None)
         if not selected_id:
             return dd, gr.update(choices=[], value=[]), _render_subjects_md(subjects_by_class, None, classrooms or [])
         lst = subjects_by_class.get(selected_id, [])
@@ -1119,14 +1151,14 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         new_map[selected_id] = lst
         return new_map, _render_subjects_md(new_map, selected_id, classrooms or [])
 
-    btnSubjectsRefresh.click(subjects_refresh, inputs=[
-        classroomsState, selectedClass, subjectsState], outputs=[selectedClass, activeList, subjectsMd])
-    selectedClass.change(subjects_refresh, inputs=[
-        classroomsState, selectedClass, subjectsState], outputs=[selectedClass, activeList, subjectsMd])
-    btnAddSubj.click(add_subject, inputs=[selectedClass, subjName, subjectsState, classroomsState], outputs=[
-        subjectsState, selectedClass, activeList, subjectsMd])
-    btnApplyActive.click(apply_active, inputs=[
-        selectedClass, activeList, subjectsState, classroomsState], outputs=[subjectsState, subjectsMd])
+    btnSubjectsRefresh.click(subjects_refresh, inputs=[classroomsState, selectedClass, subjectsState],
+                             outputs=[selectedClass, activeList, subjectsMd])
+    selectedClass.change(subjects_refresh, inputs=[classroomsState, selectedClass, subjectsState],
+                         outputs=[selectedClass, activeList, subjectsMd])
+    btnAddSubj.click(add_subject, inputs=[selectedClass, subjName, subjectsState, classroomsState],
+                     outputs=[subjectsState, selectedClass, activeList, subjectsMd])
+    btnApplyActive.click(apply_active, inputs=[selectedClass, activeList, subjectsState, classroomsState],
+                         outputs=[subjectsState, subjectsMd])
     subjBackAdminHome.click(lambda: _go_admin("home"),
                             outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
@@ -1134,22 +1166,25 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     def refresh_history(chats_map, mine_only, auth):
         user = (auth or {}).get("username")
         return _render_history_md(chats_map, owner=user if mine_only else None)
-
     btnHistoryRefresh.click(refresh_history, inputs=[
                             chatsState, histMineOnly, authState], outputs=[historyMd])
     histBack.click(lambda: _go_admin("home"),
                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
-    # ======== PÁGINA: Avaliação ========
+    # ======== PÁGINA: Avaliação (com handlers tolerantes) ========
     def eval_refresh_dropdown(chats_map):
-        # apenas chats que têm ao menos uma msg de aluno
         ids = []
         for cid, chat in (chats_map or {}).items():
             if any(m for m in chat["messages"] if m["role"] == "user"):
                 ids.append((chat.get("title") or cid, cid))
-        return gr.update(choices=ids)
+        default_val = ids[0][1] if ids else None
+        return gr.update(choices=ids, value=default_val)
 
-    def eval_load(chat_id, chats_map):
+    def eval_load(chat_id, chats_map=None):
+        print(
+            f"[EVAL] eval_load: chat_id={chat_id!r} has_map={bool(chats_map)}")
+        if not chat_id:
+            return "ℹ️ Selecione um chat para visualizar/avaliar."
         chat = (chats_map or {}).get(chat_id)
         return _render_eval_md(chat)
 
@@ -1166,8 +1201,8 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                          chatsState], outputs=[evalChatId])
     evalChatId.change(eval_load, inputs=[
                       evalChatId, chatsState], outputs=[evalCurrent])
-    btnSaveEval.click(eval_save, inputs=[
-                      evalChatId, evalScore, evalRubric, evalFeedback, chatsState], outputs=[chatsState, evalCurrent])
+    btnSaveEval.click(eval_save, inputs=[evalChatId, evalScore, evalRubric, evalFeedback, chatsState],
+                      outputs=[chatsState, evalCurrent])
     evalBack.click(lambda: _go_admin("home"),
                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
@@ -1175,7 +1210,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     def refresh_progress(chats_map, mine_only, auth):
         user = (auth or {}).get("username")
         return _render_progress_md(chats_map, user_filter=user if mine_only else None)
-
     btnProgRefresh.click(refresh_progress, inputs=[
                          chatsState, progMineOnly, authState], outputs=[progressMd])
     progBack.click(lambda: _go_admin("home"),
@@ -1183,7 +1217,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
 
     # ======== Home Admin: atalhos ========
     btnAdminAsStudent.click(lambda: (gr.update(visible=False), gr.update(visible=True)),
-                            inputs=None, outputs=[viewHomeAdmin, viewStudio])
+                            outputs=[viewHomeAdmin, viewStudio])
     btnAdminListStudents.click(
         listStudents, inputs=authState, outputs=[studentsOut])
 
@@ -1196,6 +1230,8 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             header, viewLogin, viewHome, viewHomeAdmin, homeGreet]
     ).then(
         _teacherUi, inputs=authState, outputs=[profRow, studentsOut]
+    ).then(
+        _studentUi, inputs=authState, outputs=[studentRow]
     )
 
     btnRegister.click(
@@ -1206,20 +1242,122 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             header, viewLogin, viewHome, viewHomeAdmin, homeGreet]
     ).then(
         _teacherUi, inputs=authState, outputs=[profRow, studentsOut]
+    ).then(
+        _studentUi, inputs=authState, outputs=[studentRow]
     )
 
     # ======== Navegação básica e Logout ========
-    btnGoCustomize.click(lambda: (gr.update(visible=False), gr.update(
-        visible=True)), inputs=None, outputs=[viewHome, viewStudio])
+    btnGoCustomize.click(lambda: (gr.update(visible=False), gr.update(visible=True)),
+                         outputs=[viewHome, viewStudio])
     btnViewStudents.click(listStudents, inputs=authState,
                           outputs=[studentsOut])
 
-    btnLogout1.click(_doLogout, inputs=None, outputs=[
+    btnLogout1.click(_doLogout, outputs=[
         authState, header, viewLogin, viewHome, viewHomeAdmin, viewStudio, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg
     ])
-    btnLogoutAdmin.click(_doLogout, inputs=None, outputs=[
+    btnLogoutAdmin.click(_doLogout, outputs=[
         authState, header, viewLogin, viewHome, viewHomeAdmin, viewStudio, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg
     ])
+
+    # ======== ALUNO: Ações / Encadeamentos ========
+    def student_rooms_refresh(auth, classrooms):
+        my = _student_classes(auth, classrooms or [])
+        choices = [(c["name"], c["id"]) for c in my]
+        default = choices[0][1] if choices else None
+        # subjectsState.value só existe em runtime; protegemos com hasattr
+        subs_map = subjectsState.value if hasattr(
+            subjectsState, "value") else {}
+        info = _render_class_details(
+            default, classrooms, subs_map) if default else "⚠️ Você ainda não está em nenhuma sala."
+        return gr.update(choices=choices, value=default), info, default
+
+    def student_on_select(cid, classrooms, subjects_by_class):
+        return _render_class_details(cid, classrooms, subjects_by_class), cid
+
+    def student_go_rooms():
+        return gr.update(visible=False), gr.update(visible=True)
+
+    def student_rooms_back():
+        return gr.update(visible=True), gr.update(visible=False)
+
+    def student_go_setup(auth, cid, classrooms, subjects_by_class):
+        c = next((x for x in (classrooms or []) if x["id"] == cid), None)
+        if not c:
+            return gr.update(visible=True), gr.update(visible=False), gr.update(value=""), gr.update(choices=[])
+        theme = c.get("theme_name") or c["name"]
+        subs = _student_subtheme_choices(cid, subjects_by_class or {})
+        return gr.update(visible=False), gr.update(visible=True), gr.update(value=theme), gr.update(choices=subs, value=subs)
+
+    def _build_extras_from_classroom(theme, subthemes, interesses):
+        # Preferimos manter "extras" enxuto; os subtemas e interesses também vão como variáveis para o builder
+        subs_txt = ", ".join(subthemes or [])
+        intr_txt = (interesses or "").strip()
+        parts = []
+        if subs_txt:
+            parts.append(f"Priorize os subtemas: {subs_txt}.")
+        if intr_txt:
+            parts.append(
+                f"Correlacione com temas de interesse do aluno: {intr_txt}.")
+        parts.append("Adote o tom motivador e pedagógico.")
+        return " ".join(parts)
+
+    def student_apply_setup(cid, theme, estilo, detalhamento, objetivo, interesses, subthemes, scriptState):
+        # Monta extras (texto) e chama builder com variáveis estruturadas
+        extras = _build_extras_from_classroom(theme, subthemes, interesses)
+        new_script = buildCustomScript(
+            theme, estilo, detalhamento, objetivo, extras,
+            subtemas=subthemes, interesses=interesses
+        )
+        return new_script, gr.update(visible=False), gr.update(visible=True)
+
+    def _student_chat_back_to_setup():
+        return gr.update(visible=True), gr.update(visible=False)
+
+    def _student_chat_enable():
+        return gr.update(interactive=True)
+
+    # Home (Aluno) → Minhas Salas
+    btnStudentRooms.click(student_go_rooms, outputs=[viewHome, viewStudentRooms]).then(
+        student_rooms_refresh, inputs=[authState, classroomsState],
+        outputs=[stRoomSelect, stRoomInfo, studentSelectedClass]
+    )
+    stRoomsRefresh.click(student_rooms_refresh, inputs=[authState, classroomsState],
+                         outputs=[stRoomSelect, stRoomInfo, studentSelectedClass])
+    stRoomSelect.change(student_on_select, inputs=[stRoomSelect, classroomsState, subjectsState],
+                        outputs=[stRoomInfo, studentSelectedClass])
+
+    stEnterRoomChatSetup.click(
+        student_go_setup,
+        inputs=[authState, studentSelectedClass,
+                classroomsState, subjectsState],
+        outputs=[viewStudentRooms, viewStudentSetup, stAssunto, stSubthemes]
+    )
+    stRoomsBack.click(student_rooms_back, outputs=[viewHome, viewStudentRooms])
+
+    stSubmit.click(
+        student_apply_setup,
+        inputs=[studentSelectedClass, stAssunto, stEstilo, stDetalhamento,
+                stObjetivo, stInteresses, stSubthemes, scriptState],
+        outputs=[scriptState, stCfgCol, stChatCol]
+    )
+    stChatInput.submit(
+        addMessage,
+        inputs=[stChatbot, stChatInput, docsState,
+                authState, currentChatId, chatsState],
+        outputs=[stChatbot, stChatInput, docsState, currentChatId, chatsState]
+    ).then(
+        bot,
+        inputs=[stChatbot, docsState, scriptState,
+                advState, currentChatId, chatsState],
+        outputs=stChatbot
+    ).then(_student_chat_enable, outputs=stChatInput)
+    stClear.click(clearChat, outputs=stChatbot)
+    stExport.click(createChatPdf, inputs=[
+                   stChatbot, docsState], outputs=gr.File())
+    stBackToSetup.click(_student_chat_back_to_setup,
+                        outputs=[stCfgCol, stChatCol])
+    stSetupBackRooms.click(lambda: (gr.update(visible=False), gr.update(visible=True)),
+                           outputs=[viewStudentSetup, viewStudentRooms])
 
 demo.queue()
 
