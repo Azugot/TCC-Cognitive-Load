@@ -536,23 +536,41 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # ======================== Navegação / Autenticação ========================
 
     def _route_home(auth):
+        is_auth = bool(auth and auth.get("isAuth")
+                       is True and auth.get("username"))
         user = (auth or {}).get("username") or ""
-        role = (auth or {}).get("role", "aluno").lower()
+        role = (auth or {}).get("role", "aluno")
+        print(
+            f"[NAV] _route_home: isAuth={is_auth} user='{user}' role='{role}'")
+
+        if not is_auth:
+            # mantém na tela de login
+            return (
+                # header
+                gr.update(
+                    value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
+                gr.update(visible=True),   # viewLogin
+                gr.update(visible=False),  # viewHome
+                gr.update(visible=False),  # viewHomeAdmin
+                gr.update(value="")        # homeGreet
+            )
+
+        role = str(role).lower()
         header_txt = f"### 👋 Olá, **{user}**! (perfil: {role})"
         if role == "admin":
             return (
-                gr.update(value=header_txt, visible=True),  # header
-                gr.update(visible=False),  # viewLogin
-                gr.update(visible=False),  # viewHome
-                gr.update(visible=True),   # viewHomeAdmin
+                gr.update(value=header_txt, visible=True),
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True),
                 gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{user}**")
             )
         else:
             return (
-                gr.update(value=header_txt, visible=True),  # header
-                gr.update(visible=False),  # viewLogin
-                gr.update(visible=True),   # viewHome
-                gr.update(visible=False),  # viewHomeAdmin
+                gr.update(value=header_txt, visible=True),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=False),
                 gr.update(value=f"## 🏠 Home — bem-vindo, **{user}**")
             )
 
@@ -562,33 +580,49 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         return gr.update(visible=is_prof), gr.update(value="")
 
     def doRegister(username, password, role, authState):
-        username = (username or "").strip()
-        password = (password or "").strip()
-        if not username or not password:
+        uname = (username or "").strip().lower()
+        pw = (password or "").strip()
+        print(f"[AUTH] doRegister: uname='{uname}' role='{role}'")
+        if not uname or not pw:
             return gr.update(value="⚠️ Informe usuário e senha."), authState
+
         db = _loadUsers()
-        if username in db:
+        if uname in db:
+            print(f"[AUTH] doRegister: usuário já existe -> {uname}")
             return gr.update(value="⚠️ Usuário já existe."), authState
-        role = (role or "aluno").lower()
-        _setUserEntry(db, username, _hashPw(password), role)
+
+        role = (role or "aluno").strip().lower()
+        _setUserEntry(db, uname, _hashPw(pw), role)
         _saveUsers(db)
-        authState = {"isAuth": True, "username": username, "role": role}
-        return gr.update(value=f"✅ Registrado e logado como **{username}** (perfil: {role})."), authState
+
+        authState = {"isAuth": True, "username": uname, "role": role}
+        print(f"[AUTH] doRegister: registrado e logado -> {authState}")
+        return gr.update(value=f"✅ Registrado e logado como **{uname}** (perfil: {role})."), authState
 
     def doLogin(username, password, authState):
-        username = (username or "").strip()
-        password = (password or "").strip()
-        if not username or not password:
+        uname = (username or "").strip().lower()
+        pw = (password or "").strip()
+        print(f"[AUTH] doLogin: uname='{uname}'")
+        if not uname or not pw:
             return gr.update(value="⚠️ Informe usuário e senha."), authState
+
         db = _loadUsers()
-        entry = _getUserEntry(db, username)
-        if not entry or entry.get("pw") != _hashPw(password):
+        entry = _getUserEntry(db, uname)
+        if not entry:
+            print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
             return gr.update(value="❌ Usuário ou senha incorretos."), authState
-        role = entry.get("role", "aluno")
-        authState = {"isAuth": True, "username": username, "role": role}
-        return gr.update(value=f"✅ Bem-vindo, **{username}** (perfil: {role})."), authState
+
+        if entry.get("pw") != _hashPw(pw):
+            print(f"[AUTH] doLogin: senha incorreta -> {uname}")
+            return gr.update(value="❌ Usuário ou senha incorretos."), authState
+
+        role = (entry.get("role") or "aluno").lower()
+        authState = {"isAuth": True, "username": uname, "role": role}
+        print(f"[AUTH] doLogin: sucesso -> {authState}")
+        return gr.update(value=f"✅ Bem-vindo, **{uname}** (perfil: {role})."), authState
 
     def _doLogout():
+        print("[AUTH] logout")
         return (
             {"isAuth": False, "username": None},
             gr.update(
@@ -842,7 +876,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     btnHistoryRefresh.click(refresh_history, inputs=[
                             chatsState, histMineOnly, authState], outputs=[historyMd])
     histBack.click(lambda: _go_admin("home"),
-                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== PÁGINA: Avaliação ========
     def eval_refresh_dropdown(chats_map):
