@@ -16,7 +16,14 @@ def _normalize_db_keys(db: dict) -> dict:
         if isinstance(v, dict):
             pw = v.get("pw") or v.get("password") or ""
             role = (v.get("role") or "aluno").lower()
-            fixed[uname] = {"pw": pw, "role": role}
+            login = (v.get("login") or v.get("email") or "").strip().lower()
+            display = (v.get("display_name") or v.get("name") or "").strip()
+            entry = {"pw": pw, "role": role}
+            if login:
+                entry["login"] = login
+            if display:
+                entry["display_name"] = display
+            fixed[uname] = entry
         elif isinstance(v, str):
             fixed[uname] = {"pw": v, "role": "aluno"}
     return fixed
@@ -57,8 +64,17 @@ def _getUserEntry(db, username):
     if isinstance(entry, dict):
         pw = entry.get("pw") or entry.get("password") or ""
         role = (entry.get("role") or "aluno").lower()
-        _log(f"getUserEntry('{uname}') -> encontrado (role={role})")
-        return {"pw": pw, "role": role}
+        login = (entry.get("login") or entry.get("email") or "").strip().lower()
+        display = (entry.get("display_name") or entry.get("name") or "").strip()
+        _log(
+            f"getUserEntry('{uname}') -> encontrado (role={role}, login={login or '-'})"
+        )
+        data = {"pw": pw, "role": role}
+        if login:
+            data["login"] = login
+        if display:
+            data["display_name"] = display
+        return data
     if isinstance(entry, str):
         _log(f"getUserEntry('{uname}') -> legado(str) (assumindo role=aluno)")
         return {"pw": entry, "role": "aluno"}
@@ -66,8 +82,31 @@ def _getUserEntry(db, username):
     return None
 
 
-def _setUserEntry(db, username, pw_hash, role):
+def create_user_record(db, username, pw_hash, role, login=None, display_name=None):
     uname = (username or "").strip().lower()
-    db[uname] = {"pw": pw_hash, "role": (role or "aluno").lower()}
-    _log(f"setUserEntry('{uname}', role={role})")
+    record = {
+        "pw": pw_hash,
+        "role": (role or "aluno").lower(),
+    }
+    login_norm = (login or "").strip().lower()
+    display_norm = (display_name or "").strip()
+    if login_norm:
+        record["login"] = login_norm
+    if display_norm:
+        record["display_name"] = display_norm
+    db[uname] = record
+    _log(
+        "setUserEntry('{}', role={}, login={}, display_name={})".format(
+            uname,
+            record["role"],
+            login_norm or "-",
+            display_norm or "-",
+        )
+    )
+    return record
+
+
+def _setUserEntry(db, username, pw_hash, role, login=None, display_name=None):
+    create_user_record(db, username, pw_hash, role, login=login,
+                       display_name=display_name)
     return db

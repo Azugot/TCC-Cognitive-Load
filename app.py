@@ -5,7 +5,13 @@ import time
 import gradio as gr
 
 from services.vertex_client import VERTEX_CFG, _vertex_err, _streamFromVertex
-from services.auth_store import _loadUsers, _saveUsers, _hashPw, _getUserEntry, _setUserEntry
+from services.auth_store import (
+    _loadUsers,
+    _saveUsers,
+    _hashPw,
+    _getUserEntry,
+    create_user_record,
+)
 from services.docs import extractPdfText, createChatPdf
 from services.script_builder import buildCustomScript
 
@@ -340,6 +346,14 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         gr.Markdown("## 🔐 Login / Registro")
         with gr.Row():
             username = gr.Textbox(label="Usuário", placeholder="ex: augusto")
+            email = gr.Textbox(
+                label="E-mail",
+                placeholder="ex: usuario@escola.br",
+            )
+            fullName = gr.Textbox(
+                label="Nome completo",
+                placeholder="ex: Ana Silva",
+            )
             password = gr.Textbox(
                 label="Senha", type="password", placeholder="••••••••")
         with gr.Row():
@@ -809,18 +823,37 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
 
     # ======== Auth ========
 
-    def doRegister(username, password, role, authState):
+    def doRegister(username, email, full_name, password, role, authState):
         uname = (username or "").strip().lower()
+        email_addr = (email or "").strip().lower()
+        display_name = (full_name or "").strip()
         pw = (password or "").strip()
-        print(f"[AUTH] doRegister: uname='{uname}' role='{role}'")
-        if not uname or not pw:
-            return gr.update(value="⚠️ Informe usuário e senha."), authState
+        print(
+            f"[AUTH] doRegister: uname='{uname}' email='{email_addr}' role='{role}'"
+        )
+        if not uname or not pw or not email_addr or not display_name:
+            return gr.update(value="⚠️ Informe usuário, e-mail, nome e senha."), authState
         db = _loadUsers()
         if uname in db:
             print(f"[AUTH] doRegister: usuário já existe -> {uname}")
             return gr.update(value="⚠️ Usuário já existe."), authState
+        for entry in (db or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            login = (entry.get("login") or entry.get("email") or "").strip().lower()
+            if login and login == email_addr:
+                print(f"[AUTH] doRegister: e-mail já utilizado -> {email_addr}")
+                return gr.update(value="⚠️ E-mail já cadastrado."), authState
         role = (role or "aluno").strip().lower()
-        _setUserEntry(db, uname, _hashPw(pw), role)
+        pw_hash = _hashPw(pw)
+        create_user_record(
+            db,
+            uname,
+            pw_hash,
+            role,
+            login=email_addr,
+            display_name=display_name,
+        )
         _saveUsers(db)
         authState = {"isAuth": True, "username": uname, "role": role}
         print(f"[AUTH] doRegister: registrado e logado -> {authState}")
@@ -1387,8 +1420,10 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     )
 
     btnRegister.click(
-        doRegister, inputs=[username, password, roleRadio,
-                            authState], outputs=[loginMsg, authState]
+        doRegister,
+        inputs=[username, email, fullName, password, roleRadio,
+                authState],
+        outputs=[loginMsg, authState]
     ).then(
         _route_home, inputs=authState, outputs=[
             header, viewLogin, viewHome, viewHomeAdmin, homeGreet]
