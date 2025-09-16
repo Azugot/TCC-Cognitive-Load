@@ -5,9 +5,32 @@ import time
 import gradio as gr
 
 from services.vertex_client import VERTEX_CFG, _vertex_err, _streamFromVertex
-from services.auth_store import _loadUsers, _saveUsers, _hashPw, _getUserEntry, _setUserEntry
+from services.auth_store import _hashPw
 from services.docs import extractPdfText, createChatPdf
 from services.script_builder import buildCustomScript
+from services.supabase_client import (
+    SupabaseConfigurationError,
+    SupabaseOperationError,
+    SupabaseUserExistsError,
+    create_user_record,
+    fetch_user_record,
+    fetch_users_by_role,
+)
+
+# ======================== Configuração Supabase ========================
+
+# Substitua os valores abaixo pelas credenciais reais do projeto Supabase.
+SUPABASE_URL = "https://YOUR_SUPABASE_PROJECT.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "SUPABASE_SERVICE_ROLE_KEY"
+SUPABASE_USERS_TABLE = "users"
+
+ROLE_PT_TO_DB = {
+    "aluno": "student",
+    "professor": "teacher",
+    "admin": "admin",
+}
+
+ROLE_DB_TO_PT = {value: key for key, value in ROLE_PT_TO_DB.items()}
 
 # ======================== Utilidades ========================
 
@@ -810,40 +833,99 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # ======== Auth ========
 
     def doRegister(username, password, role, authState):
-        uname = (username or "").strip().lower()
+        raw_username = (username or "").strip()
+        uname = raw_username.lower()
         pw = (password or "").strip()
         print(f"[AUTH] doRegister: uname='{uname}' role='{role}'")
         if not uname or not pw:
             return gr.update(value="⚠️ Informe usuário e senha."), authState
-        db = _loadUsers()
-        if uname in db:
-            print(f"[AUTH] doRegister: usuário já existe -> {uname}")
+
+        role_pt = (role or "aluno").strip().lower() or "aluno"
+        supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
+
+        try:
+            created = create_user_record(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                SUPABASE_USERS_TABLE,
+                login=uname,
+                password_hash=_hashPw(pw),
+                role=supabase_role,
+                display_name=raw_username or uname,
+            )
+            print(f"[AUTH] doRegister: Supabase created -> {created}")
+        except SupabaseConfigurationError:
+            warn = (
+                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de registrar usuários."
+            )
+            print("[AUTH] doRegister: configuração Supabase ausente")
+            return gr.update(value=warn), authState
+        except SupabaseUserExistsError:
+            print(f"[AUTH] doRegister: usuário já existe no Supabase -> {uname}")
             return gr.update(value="⚠️ Usuário já existe."), authState
-        role = (role or "aluno").strip().lower()
-        _setUserEntry(db, uname, _hashPw(pw), role)
-        _saveUsers(db)
-        authState = {"isAuth": True, "username": uname, "role": role}
+        except SupabaseOperationError as err:
+            print(f"[AUTH] doRegister: erro Supabase -> {err}")
+            return gr.update(value=f"❌ Erro ao registrar usuário: {err}"), authState
+        except Exception as exc:  # pragma: no cover - caminhos não determinísticos
+            print(f"[AUTH] doRegister: erro inesperado -> {exc}")
+            return gr.update(value=f"❌ Erro inesperado ao registrar usuário: {exc}"), authState
+
+        mapped_role = ROLE_DB_TO_PT.get(
+            (created.role or supabase_role or "student").strip().lower(),
+            role_pt,
+        )
+        authState = {"isAuth": True, "username": uname, "role": mapped_role}
         print(f"[AUTH] doRegister: registrado e logado -> {authState}")
-        return gr.update(value=f"✅ Registrado e logado como **{uname}** (perfil: {role})."), authState
+        return gr.update(
+            value=f"✅ Registrado e logado como **{uname}** (perfil: {mapped_role})."
+        ), authState
 
     def doLogin(username, password, authState):
-        uname = (username or "").strip().lower()
+        raw_username = (username or "").strip()
+        uname = raw_username.lower()
         pw = (password or "").strip()
         print(f"[AUTH] doLogin: uname='{uname}'")
         if not uname or not pw:
             return gr.update(value="⚠️ Informe usuário e senha."), authState
-        db = _loadUsers()
-        entry = _getUserEntry(db, uname)
+
+        try:
+            entry = fetch_user_record(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                SUPABASE_USERS_TABLE,
+                uname,
+            )
+        except SupabaseConfigurationError:
+            warn = (
+                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de realizar o login."
+            )
+            print("[AUTH] doLogin: configuração Supabase ausente")
+            return gr.update(value=warn), authState
+        except SupabaseOperationError as err:
+            print(f"[AUTH] doLogin: erro Supabase -> {err}")
+            return gr.update(value=f"❌ Erro ao consultar usuário: {err}"), authState
+        except Exception as exc:  # pragma: no cover - caminhos não determinísticos
+            print(f"[AUTH] doLogin: erro inesperado -> {exc}")
+            return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
+
         if not entry:
             print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
             return gr.update(value="❌ Usuário ou senha incorretos."), authState
-        if entry.get("pw") != _hashPw(pw):
+
+        expected_hash = entry.password_hash or ""
+        if expected_hash != _hashPw(pw):
             print(f"[AUTH] doLogin: senha incorreta -> {uname}")
             return gr.update(value="❌ Usuário ou senha incorretos."), authState
-        role = (entry.get("role") or "aluno").lower()
-        authState = {"isAuth": True, "username": uname, "role": role}
+
+        mapped_role = ROLE_DB_TO_PT.get(
+            (entry.role or "student").strip().lower(),
+            "aluno",
+        )
+        authState = {"isAuth": True, "username": uname, "role": mapped_role}
         print(f"[AUTH] doLogin: sucesso -> {authState}")
-        return gr.update(value=f"✅ Bem-vindo, **{uname}** (perfil: {role})."), authState
+        return gr.update(
+            value=f"✅ Bem-vindo, **{uname}** (perfil: {mapped_role})."
+        ), authState
 
     def _doLogout():
         print("[AUTH] logout")
@@ -867,11 +949,30 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         role = (auth or {}).get("role", "aluno")
         if str(role).lower() not in ("professor", "admin"):
             return "⚠️ Apenas professores/admin podem visualizar a lista de alunos."
-        db = _loadUsers()
-        students = [
-            u for u, e in (db or {}).items()
-            if (isinstance(e, dict) and (e.get("role", "aluno") == "aluno")) or isinstance(e, str)
-        ]
+        try:
+            records = fetch_users_by_role(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                SUPABASE_USERS_TABLE,
+                ROLE_PT_TO_DB.get("aluno", "student"),
+            )
+        except SupabaseConfigurationError:
+            return (
+                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para visualizar os alunos."
+            )
+        except SupabaseOperationError as err:
+            print(f"[AUTH] listStudents: erro Supabase -> {err}")
+            return f"❌ Erro ao consultar alunos: {err}"
+        except Exception as exc:  # pragma: no cover - caminhos não determinísticos
+            print(f"[AUTH] listStudents: erro inesperado -> {exc}")
+            return f"❌ Erro inesperado ao consultar alunos: {exc}"
+
+        students = []
+        for record in records:
+            label = record.name or record.email or record.id
+            if label:
+                students.append(label)
+
         if not students:
             return "Nenhum aluno cadastrado ainda."
         students.sort(key=lambda x: x.lower())
