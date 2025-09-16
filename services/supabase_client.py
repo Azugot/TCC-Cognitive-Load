@@ -192,7 +192,7 @@ def fetch_users_by_role(
             client.table(table)
             .select("id,name,email,password_hash,role")
             .eq("role", role)
-            .order("name", ascending=True)
+            .order("name")
             .execute()
         )
     except APIError as err:
@@ -255,7 +255,7 @@ def fetch_classroom_domain(
             .select(
                 "id,name,description,theme_name,theme_config,theme_locked,is_archived,created_by"
             )
-            .order("name", ascending=True)
+            .order("name")
             .execute()
         )
     except APIError as err:
