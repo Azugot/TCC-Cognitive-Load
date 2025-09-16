@@ -387,6 +387,12 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             tSelectClass = gr.Dropdown(
                 choices=[], label="Minhas salas", value=None)
             btnTeacherRefresh = gr.Button("🔄")
+        with gr.Accordion("Membros (Professores)", open=False):
+            with gr.Row():
+                tAddTeacher = gr.Textbox(
+                    label="Adicionar professor (username)")
+                btnTeacherAddTeacher = gr.Button("👩‍🏫 Adicionar")
+            tTeachersMd = gr.Markdown("")  # opcional: mensagem/eco
         with gr.Accordion("Membros (Alunos)", open=False):
             with gr.Row():
                 tAddStudent = gr.Textbox(label="Adicionar aluno (username)")
@@ -406,6 +412,29 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 btnTeacherApplyActive = gr.Button("✅ Aplicar ativações")
             tSubjectsMd = gr.Markdown("")
         tClassroomsMd = gr.Markdown("")
+        with gr.Accordion("Parâmetros do Chat da Sala", open=False):
+            with gr.Row():
+                tTemp = gr.Slider(0.0, 1.5, value=0.7,
+                                  step=0.05, label="temperature")
+                tTopP = gr.Slider(0.0, 1.0, value=0.95,
+                                  step=0.01, label="top_p")
+            with gr.Row():
+                tTopK = gr.Slider(1, 100, value=40, step=1, label="top_k")
+                tMaxT = gr.Slider(128, 4096, value=1024,
+                                  step=64, label="max_tokens")
+            with gr.Row():
+                tEstilo = gr.Radio(
+                    choices=["técnicas", "simples"], value="simples", label="Estilo de linguagem")
+                tDetalhamento = gr.Radio(
+                    choices=["detalhadas", "curtas"], value="detalhadas", label="Nível de detalhamento")
+            tExtras = gr.Textbox(label="Preferências adicionais (extras)",
+                                 placeholder="Ex.: evitar jargões, passo-a-passo sempre, etc.")
+            with gr.Row():
+                btnTeacherSaveParams = gr.Button(
+                    "💾 Salvar parâmetros da sala", variant="primary")
+                btnTeacherLoadParams = gr.Button(
+                    "🔄 Carregar da sala selecionada")
+            tParamsMsg = gr.Markdown("")
         with gr.Row():
             btnTeacherBack = gr.Button("← Voltar à Home")
 
@@ -690,6 +719,46 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                     show_label=False, placeholder="Digite sua mensagem ou envie um PDF...", sources=["upload"], interactive=True
                 )
 
+    def student_setup_from_class(selected_id, classrooms, subjects_by_class):
+        c = _get_class_by_id(classrooms, selected_id)
+        if not c:
+            return (
+                gr.update(value=""),  # stAssunto
+                gr.update(choices=[], value=[]),  # stSubthemes
+                gr.update(value="simples"), gr.update(value="detalhadas"),
+                gr.update(value=""), gr.update(
+                    value=""),  # objetivo, interesses
+                gr.update(visible=True), gr.update(
+                    visible=False),  # stCfgCol, stChatCol
+                advState.value, "⚠️ Sala não encontrada."
+            )
+        assunto = c.get("theme_name") or c.get("name") or ""
+        # subtemas dessa sala:
+        sbj = list(subjects_by_class.get(selected_id, []))
+        st_choices = [s["name"] for s in sbj if s.get("name")]
+        # configs da sala:
+        cfg = c.get("theme_config") or {}
+        script = cfg.get("script") or {}
+        adv = cfg.get("adv") or {}
+        # atualiza advState global para o chat dessa sala
+        new_adv = {
+            "temperature": float(adv.get("temperature", 0.7)),
+            "top_p": float(adv.get("top_p", 0.95)),
+            "top_k": int(adv.get("top_k", 40)),
+            "max_tokens": int(adv.get("max_tokens", 1024)),
+        }
+        # retorna updates para a UI de setup + troca advState e mostra coluna do chat
+        return (
+            gr.update(value=assunto),
+            gr.update(choices=st_choices, value=[]),
+            gr.update(value=script.get("estilo", "simples")),
+            gr.update(value=script.get("detalhamento", "detalhadas")),
+            gr.update(value=""),  # objetivo livre do aluno
+            gr.update(value=""),  # interesses livres do aluno
+            gr.update(visible=True), gr.update(visible=False),
+            new_adv, "✅ Parâmetros da sala aplicados."
+        )
+
     # ======================== Navegação / Autenticação ========================
 
     def _route_home(auth):
@@ -973,6 +1042,68 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     btnTeacherBack.click(lambda: (gr.update(visible=True), gr.update(visible=False)),
                          outputs=[viewHome, viewTeacher])
 
+    def _get_class_by_id(classrooms, cls_id):
+        return next((x for x in (classrooms or []) if x.get("id") == cls_id), None)
+
+    def teacher_load_params(cls_id, classrooms):
+        c = _get_class_by_id(classrooms, cls_id)
+        if not c:
+            return (gr.update(value=0.7), gr.update(value=0.95), gr.update(value=40),
+                    gr.update(value=1024), gr.update(value="simples"),
+                    gr.update(value="detalhadas"), gr.update(value=""), "⚠️ Sala não encontrada.")
+        cfg = (c.get("theme_config") or {})
+        adv = cfg.get("adv") or {}
+        script = cfg.get("script") or {}
+        return (
+            gr.update(value=float(adv.get("temperature", 0.7))),
+            gr.update(value=float(adv.get("top_p", 0.95))),
+            gr.update(value=int(adv.get("top_k", 40))),
+            gr.update(value=int(adv.get("max_tokens", 1024))),
+            gr.update(value=script.get("estilo", "simples")),
+            gr.update(value=script.get("detalhamento", "detalhadas")),
+            gr.update(value=script.get("extras", "")),
+            "✅ Parâmetros carregados."
+        )
+
+    def teacher_save_params(cls_id, temp, top_p, top_k, max_t, estilo, detalhamento, extras, classrooms, auth):
+        me = _teacher_username(auth)
+        c = _get_class_by_id(classrooms, cls_id)
+        if not c:
+            return classrooms, "⚠️ Sala não encontrada."
+        teachers = [t.strip().lower() for t in c["members"]["teachers"]]
+        if me not in teachers:
+            return classrooms, "⛔ Você não é professor desta sala."
+        cfg = dict(c.get("theme_config") or {})
+        cfg["adv"] = {
+            "temperature": float(temp),
+            "top_p": float(top_p),
+            "top_k": int(top_k),
+            "max_tokens": int(max_t),
+        }
+        cfg["script"] = {
+            "estilo": (estilo or "simples"),
+            "detalhamento": (detalhamento or "detalhadas"),
+            "extras": (extras or "").strip(),
+        }
+        c["theme_config"] = cfg
+        return classrooms, "✅ Parâmetros salvos para a sala."
+
+    def teacher_add_teacher(cls_id, uname, classrooms, auth):
+        me = _teacher_username(auth)
+        uname = (uname or "").strip().lower()
+        if not cls_id or not uname:
+            return "⚠️ Informe sala e username."
+        for c in (classrooms or []):
+            if c["id"] == cls_id:
+                teachers = [t.strip().lower()
+                            for t in c["members"]["teachers"]]
+                if me not in teachers:
+                    return "⛔ Você não é professor desta sala."
+                if uname not in teachers:
+                    c["members"]["teachers"].append(uname)
+                return _render_teacher_members_md(cls_id, classrooms)
+        return "⚠️ Sala não encontrada."
+
     def teacher_add_classroom(name, theme, desc, locked, classrooms, auth):
         name = (name or "").strip()
         theme = (theme or "").strip()
@@ -1078,6 +1209,27 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         return new_map, _render_subjects_md(new_map, selected_id, classrooms or [])
 
     # Encadeamentos do Professor
+    btnTeacherAddTeacher.click(
+        teacher_add_teacher,
+        inputs=[tSelectClass, tAddTeacher, classroomsState, authState],
+        # pode reaproveitar o mesmo MD de membros se preferir
+        outputs=[tTeachersMd]
+    )
+
+    btnTeacherLoadParams.click(
+        teacher_load_params,
+        inputs=[tSelectClass, classroomsState],
+        outputs=[tTemp, tTopP, tTopK, tMaxT, tEstilo,
+                 tDetalhamento, tExtras, tParamsMsg]
+    )
+
+    btnTeacherSaveParams.click(
+        teacher_save_params,
+        inputs=[tSelectClass, tTemp, tTopP, tTopK, tMaxT, tEstilo,
+                tDetalhamento, tExtras, classroomsState, authState],
+        outputs=[classroomsState, tParamsMsg]
+    )
+
     btnTeacherAddClass.click(
         teacher_add_classroom,
         inputs=[tClsName, tClsTheme, tClsDesc,
@@ -1317,6 +1469,13 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         return gr.update(interactive=True)
 
     # Home (Aluno) → Minhas Salas
+    stEnterRoomChatSetup.click(
+        student_setup_from_class,
+        inputs=[stRoomSelect, classroomsState, subjectsState],
+        outputs=[stAssunto, stSubthemes, stEstilo, stDetalhamento,
+                 stObjetivo, stInteresses, stCfgCol, stChatCol, advState, stProvider]
+    )
+
     btnStudentRooms.click(student_go_rooms, outputs=[viewHome, viewStudentRooms]).then(
         student_rooms_refresh, inputs=[authState, classroomsState],
         outputs=[stRoomSelect, stRoomInfo, studentSelectedClass]
