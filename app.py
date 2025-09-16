@@ -534,7 +534,8 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
 
     # ===== Página do Professor (salas + subtemas) =====
     with gr.Column(visible=False) as viewTeacher:
-        teacherTitle = gr.Markdown("## 🏫 Minhas Salas (Professor)")
+        gr.Markdown("## 🏫 Gerenciar Salas")
+        teacherNotice = gr.Markdown("")
         with gr.Group():
             with gr.Row():
                 tClsName = gr.Textbox(
@@ -546,17 +547,17 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 tClsLocked = gr.Checkbox(value=True, label="Tema travado")
                 btnTeacherAddClass = gr.Button(
                     "➕ Criar sala", variant="primary")
-        with gr.Row():
-            tSelectClass = gr.Dropdown(
-                choices=[], label="Minhas salas", value=None)
-            btnTeacherRefresh = gr.Button("🔄")
-        with gr.Accordion("Membros (Professores)", open=False):
+        with gr.Accordion("Selecionar sala", open=False):
+            with gr.Row():
+                tSelectClass = gr.Dropdown(
+                    choices=[], label="Minhas salas", value=None)
+                btnTeacherRefresh = gr.Button("🔄")
+        with gr.Accordion("Membros (Professores/Alunos)", open=False):
             with gr.Row():
                 tAddTeacher = gr.Textbox(
                     label="Adicionar professor (username)")
                 btnTeacherAddTeacher = gr.Button("👩‍🏫 Adicionar")
             tTeachersMd = gr.Markdown("")  # opcional: mensagem/eco
-        with gr.Accordion("Membros (Alunos)", open=False):
             with gr.Row():
                 tAddStudent = gr.Textbox(label="Adicionar aluno (username)")
                 btnTeacherAddStudent = gr.Button("🎓 Adicionar")
@@ -564,7 +565,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 tRmUser = gr.Textbox(label="Remover usuário (username)")
                 btnTeacherRmUser = gr.Button("🗑️ Remover")
             tMembersMd = gr.Markdown("")
-        with gr.Accordion("Subtemas", open=False):
+        with gr.Accordion("Subtemas da sala", open=False):
             with gr.Row():
                 tSubjName = gr.Textbox(
                     label="Novo subtema", placeholder="Ex.: Ponteiros")
@@ -574,7 +575,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                     choices=[], label="Ativar/desativar subtemas", value=[])
                 btnTeacherApplyActive = gr.Button("✅ Aplicar ativações")
             tSubjectsMd = gr.Markdown("")
-        tClassroomsMd = gr.Markdown("")
         with gr.Accordion("Parâmetros do Chat da Sala", open=False):
             with gr.Row():
                 tTemp = gr.Slider(0.0, 1.5, value=0.7,
@@ -598,6 +598,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 btnTeacherLoadParams = gr.Button(
                     "🔄 Carregar da sala selecionada")
             tParamsMsg = gr.Markdown("")
+        tClassroomsMd = gr.Markdown("")
         with gr.Row():
             btnTeacherBack = gr.Button("← Voltar à Home")
 
@@ -606,7 +607,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         adminGreet = gr.Markdown("## 🧭 Home do Admin")
         with gr.Row():
             navClassrooms = gr.Button("🏫 Salas")
-            navSubjects = gr.Button("🧩 Subtemas")
             navHistory = gr.Button("🗂️ Histórico")
             navEvaluate = gr.Button("📝 Avaliação")
             navProgress = gr.Button("📊 Progresso")
@@ -675,28 +675,19 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 rmUser = gr.Textbox(label="Remover usuário (username)")
                 btnRmUser = gr.Button("🗑️ Remover")
             membersMd = gr.Markdown("")
+        with gr.Accordion("Subtemas da sala", open=False):
+            with gr.Row():
+                clsSubjName = gr.Textbox(
+                    label="Novo subtema", placeholder="Ex.: Ponteiros")
+                btnClsAddSubj = gr.Button("➕ Adicionar subtema")
+            with gr.Row():
+                clsActiveList = gr.CheckboxGroup(
+                    choices=[], label="Ativar/desativar subtemas", value=[])
+                btnClsApplyActive = gr.Button("✅ Aplicar ativações")
+            clsSubjectsMd = gr.Markdown("")
         classroomsMd = gr.Markdown("")
         with gr.Row():
             clsBackAdminHome = gr.Button("← Voltar à Home do Admin")
-
-    # ===== PÁGINA: Subtemas (Admin) =====
-    with gr.Column(visible=False) as viewSubjects:
-        gr.Markdown("## 🧩 Gerenciar Subtemas por Sala")
-        with gr.Row():
-            selectedClass = gr.Dropdown(choices=[], label="Sala", value=None)
-            btnSubjectsRefresh = gr.Button("🔄")
-        with gr.Row():
-            subjName = gr.Textbox(label="Novo subtema",
-                                  placeholder="Ex.: Ponteiros")
-            btnAddSubj = gr.Button("➕ Adicionar subtema")
-        with gr.Row():
-            activeList = gr.CheckboxGroup(
-                choices=[], label="Ativar/desativar subtemas", value=[])
-            btnApplyActive = gr.Button("✅ Aplicar ativações")
-        subjectsMd = gr.Markdown("")
-        with gr.Row():
-            subjBackAdminHome = gr.Button("← Voltar à Home do Admin")
-
     # ===== PÁGINA: Histórico =====
     with gr.Column(visible=False) as viewHistory:
         gr.Markdown("## 🗂️ Histórico de Chats")
@@ -1112,7 +1103,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             gr.update(visible=False),  # viewHomeAdmin
             gr.update(visible=False),  # viewStudio
             gr.update(visible=False),  # viewClassrooms
-            gr.update(visible=False),  # viewSubjects
             gr.update(visible=False),  # viewHistory
             gr.update(visible=False),  # viewEvaluate
             gr.update(visible=False),  # viewProgress
@@ -1156,35 +1146,34 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # ======== Admin: Nav entre páginas ========
     def _go_admin(page):
         vis = {
-            "home":     (True,  False, False, False, False, False, False),
-            "classrooms": (False, True,  False, False, False, False, False),
-            "subjects": (False, False, True,  False, False, False, False),
-            "history":  (False, False, False, True,  False, False, False),
-            "evaluate": (False, False, False, False, True,  False, False),
-            "progress": (False, False, False, False, False, True,  False),
-            "admin":    (False, False, False, False, False, False, True),
-        }.get(page, (True, False, False, False, False, False, False))
-        (homeV, clsV, subV, histV, evalV, progV, admV) = vis
+            "home": (True, False, False, False, False, False),
+            "classrooms": (False, True, False, False, False, False),
+            "history": (False, False, True, False, False, False),
+            "evaluate": (False, False, False, True, False, False),
+            "progress": (False, False, False, False, True, False),
+            "admin": (False, False, False, False, False, True),
+        }.get(page, (True, False, False, False, False, False))
+        (homeV, clsV, histV, evalV, progV, admV) = vis
         return (
             {"page": page},
-            gr.update(visible=homeV), gr.update(
-                visible=clsV), gr.update(visible=subV),
-            gr.update(visible=histV), gr.update(visible=evalV), gr.update(
-                visible=progV), gr.update(visible=admV)
+            gr.update(visible=homeV),
+            gr.update(visible=clsV),
+            gr.update(visible=histV),
+            gr.update(visible=evalV),
+            gr.update(visible=progV),
+            gr.update(visible=admV),
         )
 
     navClassrooms.click(lambda: _go_admin("classrooms"),
-                        outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
-    navSubjects.click(lambda: _go_admin("subjects"),
-                      outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                        outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
     navHistory.click(lambda: _go_admin("history"),
-                     outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                     outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
     navEvaluate.click(lambda: _go_admin("evaluate"),
-                      outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                      outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
     navProgress.click(lambda: _go_admin("progress"),
-                      outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                      outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
     navAdmin.click(lambda: _go_admin("admin"),
-                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== Admin: Salas (CRUD) ========
     def _refresh_cls_dropdown(classrooms):
@@ -1534,21 +1523,41 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         add_classroom,
         inputs=[clsName, clsTheme, clsDesc, clsLocked, classroomsState, subjectsState, authState],
         outputs=[classroomsState, subjectsState, classroomsMd, clsSelect, membClass],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classroomsState, subjectsState, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
     )
     btnRefreshCls.click(
         refresh_classrooms,
         inputs=[classroomsState, subjectsState],
         outputs=[classroomsState, subjectsState, classroomsMd, clsSelect, membClass],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classroomsState, subjectsState, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
     )
     clsSelect.change(load_cls_for_edit, inputs=[clsSelect, classroomsState],
-                     outputs=[eName, eTheme, eDesc, eLocked, eArchived, classroomsMd])
+                     outputs=[eName, eTheme, eDesc, eLocked, eArchived, classroomsMd]).then(
+        admin_refresh_subjects,
+        inputs=[classroomsState, subjectsState, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
     btnSaveCls.click(
         save_cls,
         inputs=[clsSelect, eName, eTheme, eDesc, eLocked, eArchived, classroomsState, subjectsState],
         outputs=[classroomsState, subjectsState, classroomsMd],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classroomsState, subjectsState, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
     )
     btnDeleteCls.click(delete_cls, inputs=[clsSelect, classroomsState, subjectsState],
-                       outputs=[classroomsState, subjectsState, classroomsMd])
+                       outputs=[classroomsState, subjectsState, classroomsMd]).then(
+        admin_refresh_subjects,
+        inputs=[classroomsState, subjectsState, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
     membClass.change(
         lambda cid, cls: _render_members_md(cid, cls),
         inputs=[membClass, classroomsState],
@@ -1569,8 +1578,18 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         inputs=[membClass, rmUser, classroomsState, subjectsState],
         outputs=[classroomsState, subjectsState, membersMd],
     )
+    btnClsAddSubj.click(
+        admin_add_subject,
+        inputs=[clsSelect, clsSubjName, subjectsState, classroomsState, authState],
+        outputs=[classroomsState, subjectsState, clsActiveList, clsSubjectsMd],
+    )
+    btnClsApplyActive.click(
+        admin_apply_active,
+        inputs=[clsSelect, clsActiveList, subjectsState, classroomsState],
+        outputs=[classroomsState, subjectsState, clsActiveList, clsSubjectsMd],
+    )
     clsBackAdminHome.click(lambda: _go_admin("home"),
-                           outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                           outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== Professor: Navegação e ações ========
     btnTeacherClassrooms.click(lambda: (gr.update(visible=False), gr.update(visible=True)),
@@ -2042,7 +2061,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             subjectsState,
             authState,
         ],
-        outputs=[classroomsState, subjectsState, tClassroomsMd, tSelectClass, tSelectClass, teacherTitle],
+        outputs=[classroomsState, subjectsState, tClassroomsMd, tSelectClass, tSelectClass, teacherNotice],
     )
     btnTeacherRefresh.click(
         teacher_refresh,
@@ -2079,67 +2098,97 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         outputs=[classroomsState, subjectsState, tSubjectsMd],
     )
 
-    # ======== PÁGINA: Subtemas (Admin) ========
-    def _subjects_choices(classrooms, selected_id, subjects_by_class):
-        dd = gr.update(choices=[(c["name"], c["id"]) for c in (classrooms or [])],
-                       value=selected_id if selected_id else None)
-        if not selected_id:
-            return dd, gr.update(choices=[], value=[]), _render_subjects_md(subjects_by_class, None, classrooms or [])
-        lst = subjects_by_class.get(selected_id, [])
-        all_names = [s["name"] for s in lst]
-        active = [s["name"] for s in lst if s.get("active")]
-        return dd, gr.update(choices=all_names, value=active), _render_subjects_md(subjects_by_class, selected_id, classrooms or [])
-
-    def subjects_reload(classrooms, selected_id, subjects_by_class):
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        dd, chk, md = _subjects_choices(classes, selected_id, subjects_map)
+    # ======== Admin: Subtemas (na página de salas) ========
+    def _admin_subjects_ui(classrooms, subjects_by_class, selected_id, notice=""):
+        chk = gr.update(choices=[], value=[])
+        md = _render_subjects_md(subjects_by_class, selected_id, classrooms or [])
+        if selected_id:
+            lst = list(subjects_by_class.get(selected_id, []))
+            names = [s.get("name") for s in lst]
+            active = [s.get("name") for s in lst if s.get("active")]
+            chk = gr.update(choices=names, value=active)
         md = _merge_notice(md, notice)
-        return classes, subjects_map, dd, chk, md
+        return chk, md
 
-    def subjects_on_select(classrooms, selected_id, subjects_by_class):
-        return _subjects_choices(classrooms, selected_id, subjects_by_class)
+    def admin_refresh_subjects(classrooms, subjects_by_class, selected_id):
+        return _admin_subjects_ui(classrooms, subjects_by_class, selected_id)
 
-    def add_subject(selected_id, subj, subjects_by_class, classrooms, auth):
-        if not classrooms:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Cadastre uma sala primeiro."
-        if not selected_id:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala para adicionar subtemas."
+    def admin_add_subject(cls_id, subj, subjects_by_class, classrooms, auth):
+        if not cls_id:
+            chk, md = _admin_subjects_ui(
+                classrooms,
+                subjects_by_class,
+                None,
+                "ℹ️ Selecione uma sala para adicionar subtemas.",
+            )
+            return classrooms, subjects_by_class, chk, md
+
         subj_name = (subj or "").strip()
         if not subj_name:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Informe o nome do subtema."
-        existing = list(subjects_by_class.get(selected_id, []))
+            chk, md = _admin_subjects_ui(
+                classrooms,
+                subjects_by_class,
+                cls_id,
+                "⚠️ Informe o nome do subtema.",
+            )
+            return classrooms, subjects_by_class, chk, md
+
+        existing = list(subjects_by_class.get(cls_id, []))
         if any(s.get("name", "").lower() == subj_name.lower() for s in existing):
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Esse subtema já existe."
+            chk, md = _admin_subjects_ui(
+                classrooms,
+                subjects_by_class,
+                cls_id,
+                "⚠️ Esse subtema já existe.",
+            )
+            return classrooms, subjects_by_class, chk, md
 
         creator_id = _auth_user_id(auth) or ""
         try:
             create_subject_record(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=selected_id,
+                classroom_id=cls_id,
                 name=subj_name,
                 created_by=creator_id,
             )
         except SupabaseConfigurationError:
-            return (
+            chk, md = _admin_subjects_ui(
                 classrooms,
                 subjects_by_class,
-                gr.update(),
-                gr.update(),
+                cls_id,
                 "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
             )
+            return classrooms, subjects_by_class, chk, md
         except SupabaseOperationError as err:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), f"❌ Erro ao adicionar subtema: {err}"
+            chk, md = _admin_subjects_ui(
+                classrooms,
+                subjects_by_class,
+                cls_id,
+                f"❌ Erro ao adicionar subtema: {err}",
+            )
+            return classrooms, subjects_by_class, chk, md
 
         classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        dd, chk, md = _subjects_choices(classes, selected_id, subjects_map)
-        md = _merge_notice(md, notice or "✅ Subtema adicionado.")
-        return classes, subjects_map, dd, chk, md
+        chk, md = _admin_subjects_ui(
+            classes,
+            subjects_map,
+            cls_id,
+            notice or "✅ Subtema adicionado.",
+        )
+        return classes, subjects_map, chk, md
 
-    def apply_active(selected_id, actives, subjects_by_class, classrooms):
-        if not selected_id:
-            return classrooms, subjects_by_class, _render_subjects_md(subjects_by_class, None, classrooms or [])
-        lst = list(subjects_by_class.get(selected_id, []))
+    def admin_apply_active(cls_id, actives, subjects_by_class, classrooms):
+        if not cls_id:
+            chk, md = _admin_subjects_ui(
+                classrooms,
+                subjects_by_class,
+                None,
+                "⚠️ Selecione uma sala.",
+            )
+            return classrooms, subjects_by_class, chk, md
+
+        lst = list(subjects_by_class.get(cls_id, []))
         names = set(actives or [])
         try:
             for entry in lst:
@@ -2153,49 +2202,30 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                     is_active=entry.get("name") in names,
                 )
         except SupabaseConfigurationError:
-            return (
+            chk, md = _admin_subjects_ui(
                 classrooms,
                 subjects_by_class,
-                _render_subjects_md(subjects_by_class, selected_id, classrooms or []),
+                cls_id,
+                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
             )
+            return classrooms, subjects_by_class, chk, md
         except SupabaseOperationError as err:
-            notice = f"❌ Erro ao atualizar subtemas: {err}"
-            md = _merge_notice(
-                _render_subjects_md(subjects_by_class, selected_id, classrooms or []),
-                notice,
+            chk, md = _admin_subjects_ui(
+                classrooms,
+                subjects_by_class,
+                cls_id,
+                f"❌ Erro ao atualizar subtemas: {err}",
             )
-            return classrooms, subjects_by_class, md
+            return classrooms, subjects_by_class, chk, md
 
         classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        md = _merge_notice(
-            _render_subjects_md(subjects_map, selected_id, classes or []),
+        chk, md = _admin_subjects_ui(
+            classes,
+            subjects_map,
+            cls_id,
             notice or "✅ Subtemas atualizados.",
         )
-        return classes, subjects_map, md
-
-    btnSubjectsRefresh.click(
-        subjects_reload,
-        inputs=[classroomsState, selectedClass, subjectsState],
-        outputs=[classroomsState, subjectsState, selectedClass, activeList, subjectsMd],
-    )
-    selectedClass.change(
-        subjects_on_select,
-        inputs=[classroomsState, selectedClass, subjectsState],
-        outputs=[selectedClass, activeList, subjectsMd],
-    )
-    btnAddSubj.click(
-        add_subject,
-        inputs=[selectedClass, subjName, subjectsState, classroomsState, authState],
-        outputs=[classroomsState, subjectsState, selectedClass, activeList, subjectsMd],
-    )
-    btnApplyActive.click(
-        apply_active,
-        inputs=[selectedClass, activeList, subjectsState, classroomsState],
-        outputs=[classroomsState, subjectsState, subjectsMd],
-    )
-    subjBackAdminHome.click(lambda: _go_admin("home"),
-                            outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
-
+        return classes, subjects_map, chk, md
     # ======== PÁGINA: Histórico ========
     def refresh_history(chats_map, mine_only, auth):
         user = (auth or {}).get("username")
@@ -2203,7 +2233,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     btnHistoryRefresh.click(refresh_history, inputs=[
                             chatsState, histMineOnly, authState], outputs=[historyMd])
     histBack.click(lambda: _go_admin("home"),
-                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== PÁGINA: Avaliação (com handlers tolerantes) ========
     def eval_refresh_dropdown(chats_map):
@@ -2238,7 +2268,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     btnSaveEval.click(eval_save, inputs=[evalChatId, evalScore, evalRubric, evalFeedback, chatsState],
                       outputs=[chatsState, evalCurrent])
     evalBack.click(lambda: _go_admin("home"),
-                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== PÁGINA: Progresso ========
     def refresh_progress(chats_map, mine_only, auth):
@@ -2247,7 +2277,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     btnProgRefresh.click(refresh_progress, inputs=[
                          chatsState, progMineOnly, authState], outputs=[progressMd])
     progBack.click(lambda: _go_admin("home"),
-                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
+                   outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== Home Admin: atalhos ========
     btnAdminAsStudent.click(lambda: (gr.update(visible=False), gr.update(visible=True)),
@@ -2301,10 +2331,10 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                           outputs=[studentsOut])
 
     btnLogout1.click(_doLogout, outputs=[
-        authState, header, viewLogin, viewHome, viewHomeAdmin, viewStudio, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg
+        authState, header, viewLogin, viewHome, viewHomeAdmin, viewStudio, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg
     ])
     btnLogoutAdmin.click(_doLogout, outputs=[
-        authState, header, viewLogin, viewHome, viewHomeAdmin, viewStudio, viewClassrooms, viewSubjects, viewHistory, viewEvaluate, viewProgress, viewAdminPg
+        authState, header, viewLogin, viewHome, viewHomeAdmin, viewStudio, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg
     ])
 
     # ======== ALUNO: Ações / Encadeamentos ========
