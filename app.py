@@ -361,20 +361,23 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # ===== Login =====
     with gr.Column(visible=True) as viewLogin:
         gr.Markdown("## 🔐 Login / Registro")
+        authMode = gr.Radio(
+            ["Login", "Registrar"], value="Login", label="Modo de acesso")
         with gr.Row():
             username = gr.Textbox(label="Usuário", placeholder="ex: augusto")
+            password = gr.Textbox(
+                label="Senha", type="password", placeholder="••••••••")
+        with gr.Row(visible=False) as registerRow:
             email = gr.Textbox(
                 label="E-mail", placeholder="ex: nome@dominio.com")
             fullName = gr.Textbox(
                 label="Nome completo", placeholder="ex: Maria Silva")
-            password = gr.Textbox(
-                label="Senha", type="password", placeholder="••••••••")
-        with gr.Row():
+        with gr.Row(visible=False) as registerRoleRow:
             roleRadio = gr.Radio(
                 choices=["Aluno", "Professor", "Admin"], label="Perfil", value="Aluno")
         with gr.Row():
-            btnLogin = gr.Button("Entrar", variant="primary")
-            btnRegister = gr.Button("Registrar")
+            btnLogin = gr.Button("Entrar", variant="primary", visible=True)
+            btnRegister = gr.Button("Registrar", visible=False)
         loginMsg = gr.Markdown("")
 
     # ===== Home (Aluno/Professor) =====
@@ -835,6 +838,16 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         return gr.update(visible=is_student_or_admin)
 
     # ======== Auth ========
+
+    def switch_auth_mode(mode):
+        is_register = str(mode or "").strip().lower() == "registrar"
+        return (
+            gr.update(visible=is_register),
+            gr.update(visible=is_register),
+            gr.update(visible=not is_register),
+            gr.update(visible=is_register),
+            gr.update(value=""),
+        )
 
     def doRegister(username, password, email, full_name, role, authState):
         raw_username = (username or "").strip()
@@ -1496,6 +1509,12 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         listStudents, inputs=authState, outputs=[studentsOut])
 
     # ======== Encadeamentos de Login/Registro ========
+    authMode.change(
+        switch_auth_mode,
+        inputs=[authMode],
+        outputs=[registerRow, registerRoleRow, btnLogin, btnRegister, loginMsg],
+    )
+
     btnLogin.click(
         doLogin, inputs=[username, password,
                          authState], outputs=[loginMsg, authState]
