@@ -363,6 +363,10 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         gr.Markdown("## 🔐 Login / Registro")
         with gr.Row():
             username = gr.Textbox(label="Usuário", placeholder="ex: augusto")
+            email = gr.Textbox(
+                label="E-mail", placeholder="ex: nome@dominio.com")
+            fullName = gr.Textbox(
+                label="Nome completo", placeholder="ex: Maria Silva")
             password = gr.Textbox(
                 label="Senha", type="password", placeholder="••••••••")
         with gr.Row():
@@ -832,26 +836,32 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
 
     # ======== Auth ========
 
-    def doRegister(username, password, role, authState):
+    def doRegister(username, password, email, full_name, role, authState):
         raw_username = (username or "").strip()
-        uname = raw_username.lower()
+        raw_email = (email or "").strip()
+        login_email = raw_email.lower()
+        name = (full_name or "").strip()
         pw = (password or "").strip()
-        print(f"[AUTH] doRegister: uname='{uname}' role='{role}'")
-        if not uname or not pw:
-            return gr.update(value="⚠️ Informe usuário e senha."), authState
+        print(
+            f"[AUTH] doRegister: username='{raw_username.lower()}' email='{login_email}' role='{role}'"
+        )
+        if not raw_username or not login_email or not name or not pw:
+            return gr.update(value="⚠️ Informe usuário, e-mail, nome e senha."), authState
 
         role_pt = (role or "aluno").strip().lower() or "aluno"
         supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
+
+        display_name = name or raw_username or login_email
 
         try:
             created = create_user_record(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
                 SUPABASE_USERS_TABLE,
-                login=uname,
+                login=login_email,
                 password_hash=_hashPw(pw),
                 role=supabase_role,
-                display_name=raw_username or uname,
+                display_name=display_name,
             )
             print(f"[AUTH] doRegister: Supabase created -> {created}")
         except SupabaseConfigurationError:
@@ -861,7 +871,9 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             print("[AUTH] doRegister: configuração Supabase ausente")
             return gr.update(value=warn), authState
         except SupabaseUserExistsError:
-            print(f"[AUTH] doRegister: usuário já existe no Supabase -> {uname}")
+            print(
+                f"[AUTH] doRegister: usuário já existe no Supabase -> {login_email}"
+            )
             return gr.update(value="⚠️ Usuário já existe."), authState
         except SupabaseOperationError as err:
             print(f"[AUTH] doRegister: erro Supabase -> {err}")
@@ -874,10 +886,19 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             (created.role or supabase_role or "student").strip().lower(),
             role_pt,
         )
-        authState = {"isAuth": True, "username": uname, "role": mapped_role}
+        auth_username = login_email or created.email or raw_username.lower()
+        authState = {
+            "isAuth": True,
+            "username": auth_username,
+            "role": mapped_role,
+            "display_name": display_name,
+        }
         print(f"[AUTH] doRegister: registrado e logado -> {authState}")
         return gr.update(
-            value=f"✅ Registrado e logado como **{uname}** (perfil: {mapped_role})."
+            value=(
+                f"✅ Registrado e logado como **{display_name}** "
+                f"(`{auth_username}`) (perfil: {mapped_role})."
+            )
         ), authState
 
     def doLogin(username, password, authState):
@@ -1488,7 +1509,7 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     )
 
     btnRegister.click(
-        doRegister, inputs=[username, password, roleRadio,
+        doRegister, inputs=[username, password, email, fullName, roleRadio,
                             authState], outputs=[loginMsg, authState]
     ).then(
         _route_home, inputs=authState, outputs=[
