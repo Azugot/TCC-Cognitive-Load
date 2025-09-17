@@ -366,6 +366,1394 @@ def _student_subtheme_choices(cls_id, subjects_by_class):
     return [s["name"] for s in lst if s.get("active", True)]
 
 
+# ======================== UI helpers & callbacks ========================
+
+# ----- Domain state sync -----
+def _load_domain_state(current_classrooms=None, current_subjects=None):
+    try:
+        raw_classrooms, raw_subjects = fetch_classroom_domain(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            users_table=SUPABASE_USERS_TABLE,
+        )
+    except SupabaseConfigurationError:
+        warn = (
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar as salas."
+        )
+        return current_classrooms or [], current_subjects or {}, warn
+    except SupabaseOperationError as err:
+        warn = f"❌ Erro ao consultar salas: {err}"
+        return current_classrooms or [], current_subjects or {}, warn
+
+    normalized_classrooms = []
+    for item in raw_classrooms:
+        teachers = {
+            _normalize_username(entry.get("login"))
+            for entry in item.get("teachers", [])
+            if entry.get("login")
+        }
+        students = {
+            _normalize_username(entry.get("login"))
+            for entry in item.get("students", [])
+            if entry.get("login")
+            and str(entry.get("status", "active")).lower() == "active"
+        }
+        owner_login = _normalize_username(item.get("owner_login"))
+        if owner_login:
+            teachers.add(owner_login)
+        normalized_classrooms.append(
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "description": item.get("description") or "",
+                "theme_name": item.get("theme_name") or item.get("name"),
+                "theme_config": item.get("theme_config") or {},
+                "theme_locked": bool(item.get("theme_locked")),
+                "is_archived": bool(item.get("is_archived")),
+                "members": {
+                    "teachers": sorted(t for t in teachers if t),
+                    "students": sorted(students),
+                },
+                "owner": owner_login,
+                "owner_id": item.get("owner_id"),
+            }
+        )
+
+    normalized_classrooms.sort(key=lambda cls: (cls.get("name") or "").lower())
+
+    normalized_subjects = {}
+    for cid, entries in raw_subjects.items():
+        normalized_subjects[cid] = [
+            {
+                "id": entry.get("id"),
+                "name": entry.get("name"),
+                "active": bool(entry.get("is_active", True)),
+            }
+            for entry in entries
+        ]
+        normalized_subjects[cid].sort(
+            key=lambda item: (item.get("name") or "").lower()
+        )
+
+    return normalized_classrooms, normalized_subjects, ""
+
+def _refresh_states(current_classrooms=None, current_subjects=None):
+    classrooms, subjects, notice = _load_domain_state(
+        current_classrooms, current_subjects
+    )
+    return classrooms, subjects, notice
+
+def _sync_domain_after_auth(auth, classrooms, subjects):
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    if notice:
+        print(f"[SUPABASE] {notice}")
+    return classes, subjects_map
+
+def _admin_classrooms_outputs(classrooms, notice=""):
+    md = _render_classrooms_md(classrooms or [])
+    md = _merge_notice(md, notice)
+    dd1, dd2 = _refresh_cls_dropdown(classrooms or [])
+    return md, dd1, dd2
+
+def _teacher_classrooms_outputs(auth, classrooms, notice=""):
+    relevant = _teacher_classes(auth, classrooms or [])
+    md = _render_classrooms_md(relevant)
+    md = _merge_notice(md, notice)
+    dd = gr.update(choices=_teacher_choices(auth, classrooms or []))
+    return md, dd
+
+def student_setup_from_class(selected_id, classrooms, subjects_by_class, current_adv):
+    c = _get_class_by_id(classrooms, selected_id)
+    if not c:
+        return (
+            gr.update(value=""),  # stAssunto
+            gr.update(choices=[], value=[]),  # stSubthemes
+            gr.update(value="simples"), gr.update(value="detalhadas"),
+            gr.update(value=""), gr.update(
+                value=""),  # objetivo, interesses
+            gr.update(visible=True), gr.update(
+                visible=False),  # stCfgCol, stChatCol
+            current_adv or {}, "⚠️ Sala não encontrada."
+        )
+    assunto = c.get("theme_name") or c.get("name") or ""
+    # subtemas dessa sala:
+    sbj = list(subjects_by_class.get(selected_id, []))
+    st_choices = [s["name"] for s in sbj if s.get("name")]
+    # configs da sala:
+    cfg = c.get("theme_config") or {}
+    script = cfg.get("script") or {}
+    adv = cfg.get("adv") or {}
+    # configura as opções avançadas para o chat da sala
+    new_adv = {
+        "temperature": float(adv.get("temperature", 0.7)),
+        "top_p": float(adv.get("top_p", 0.95)),
+        "top_k": int(adv.get("top_k", 40)),
+        "max_tokens": int(adv.get("max_tokens", 1024)),
+    }
+    # retorna updates para a UI de setup + troca advState e mostra coluna do chat
+    return (
+        gr.update(value=assunto),
+        gr.update(choices=st_choices, value=[]),
+        gr.update(value=script.get("estilo", "simples")),
+        gr.update(value=script.get("detalhamento", "detalhadas")),
+        gr.update(value=""),  # objetivo livre do aluno
+        gr.update(value=""),  # interesses livres do aluno
+        gr.update(visible=True), gr.update(visible=False),
+        new_adv, "✅ Parâmetros da sala aplicados."
+    )
+
+# ----- Auth & navigation -----
+def _route_home(auth):
+    is_auth = bool(auth and auth.get("isAuth")
+                   is True and auth.get("username"))
+    user = (auth or {}).get("username") or ""
+    role = (auth or {}).get("role", "aluno")
+    print(
+        f"[NAV] _route_home: isAuth={is_auth} user='{user}' role='{role}'")
+
+    if not is_auth:
+        return (
+            gr.update(
+                value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
+            gr.update(visible=True),   # viewLogin
+            gr.update(visible=False),  # viewHome
+            gr.update(visible=False),  # viewHomeAdmin
+            gr.update(value="")        # homeGreet
+        )
+    role = str(role).lower()
+    header_txt = f"### 👋 Olá, **{user}**! (perfil: {role})"
+    if role == "admin":
+        return (
+            gr.update(value=header_txt, visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{user}**")
+        )
+    else:
+        return (
+            gr.update(value=header_txt, visible=True),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(value=f"## 🏠 Home — bem-vindo, **{user}**")
+        )
+
+def _teacherUi(auth):
+    role = (auth or {}).get("role", "aluno")
+    is_prof = (str(role).lower() == "professor")
+    return gr.update(visible=is_prof), gr.update(value="")
+
+def _studentUi(auth):
+    role = (auth or {}).get("role", "aluno")
+    is_student_or_admin = str(role).lower() in ("aluno", "admin")
+    return gr.update(visible=is_student_or_admin)
+
+def _back_home(auth):
+    role = (auth or {}).get("role", "aluno")
+    if str(role).lower() == "admin":
+        return (
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+        )
+    return (
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=True),
+    )
+
+def switch_auth_mode(mode):
+    is_register = str(mode or "").strip().lower() == "registrar"
+    return (
+        gr.update(visible=is_register),
+        gr.update(visible=is_register),
+        gr.update(visible=not is_register),
+        gr.update(visible=is_register),
+        gr.update(value=""),
+    )
+
+def doRegister(username, password, email, full_name, role, authState):
+    raw_username = (username or "").strip()
+    raw_email = (email or "").strip()
+    login_email = raw_email.lower()
+    name = (full_name or "").strip()
+    pw = (password or "").strip()
+    print(
+        f"[AUTH] doRegister: username='{raw_username.lower()}' email='{login_email}' role='{role}'"
+    )
+    if not raw_username or not login_email or not name or not pw:
+        return gr.update(value="⚠️ Informe usuário, e-mail, nome e senha."), authState
+
+    role_pt = (role or "aluno").strip().lower() or "aluno"
+    supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
+
+    display_name = name or raw_username or login_email
+
+    try:
+        created = create_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            login=login_email,
+            password_hash=_hashPw(pw),
+            role=supabase_role,
+            display_name=display_name,
+        )
+        print(f"[AUTH] doRegister: Supabase created -> {created}")
+    except SupabaseConfigurationError:
+        warn = (
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de registrar usuários."
+        )
+        print("[AUTH] doRegister: configuração Supabase ausente")
+        return gr.update(value=warn), authState
+    except SupabaseUserExistsError:
+        print(
+            f"[AUTH] doRegister: usuário já existe no Supabase -> {login_email}"
+        )
+        return gr.update(value="⚠️ Usuário já existe."), authState
+    except SupabaseOperationError as err:
+        print(f"[AUTH] doRegister: erro Supabase -> {err}")
+        return gr.update(value=f"❌ Erro ao registrar usuário: {err}"), authState
+    except Exception as exc:  # pragma: no cover - caminhos não determinísticos
+        print(f"[AUTH] doRegister: erro inesperado -> {exc}")
+        return gr.update(value=f"❌ Erro inesperado ao registrar usuário: {exc}"), authState
+
+    mapped_role = ROLE_DB_TO_PT.get(
+        (created.role or supabase_role or "student").strip().lower(),
+        role_pt,
+    )
+    auth_username = login_email or created.email or raw_username.lower()
+    authState = {
+        "isAuth": True,
+        "username": auth_username,
+        "role": mapped_role,
+        "display_name": display_name,
+        "user_id": created.id,
+    }
+    print(f"[AUTH] doRegister: registrado e logado -> {authState}")
+    return gr.update(
+        value=(
+            f"✅ Registrado e logado como **{display_name}** "
+            f"(`{auth_username}`) (perfil: {mapped_role})."
+        )
+    ), authState
+
+def doLogin(username, password, authState):
+    raw_username = (username or "").strip()
+    uname = raw_username.lower()
+    pw = (password or "").strip()
+    print(f"[AUTH] doLogin: uname='{uname}'")
+    if not uname or not pw:
+        return gr.update(value="⚠️ Informe usuário e senha."), authState
+
+    try:
+        entry = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname,
+        )
+    except SupabaseConfigurationError:
+        warn = (
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de realizar o login."
+        )
+        print("[AUTH] doLogin: configuração Supabase ausente")
+        return gr.update(value=warn), authState
+    except SupabaseOperationError as err:
+        print(f"[AUTH] doLogin: erro Supabase -> {err}")
+        return gr.update(value=f"❌ Erro ao consultar usuário: {err}"), authState
+    except Exception as exc:  # pragma: no cover - caminhos não determinísticos
+        print(f"[AUTH] doLogin: erro inesperado -> {exc}")
+        return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
+
+    if not entry:
+        print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
+        return gr.update(value="❌ Usuário ou senha incorretos."), authState
+
+    expected_hash = entry.password_hash or ""
+    if expected_hash != _hashPw(pw):
+        print(f"[AUTH] doLogin: senha incorreta -> {uname}")
+        return gr.update(value="❌ Usuário ou senha incorretos."), authState
+
+    mapped_role = ROLE_DB_TO_PT.get(
+        (entry.role or "student").strip().lower(),
+        "aluno",
+    )
+    authState = {
+        "isAuth": True,
+        "username": uname,
+        "role": mapped_role,
+        "user_id": entry.id,
+        "display_name": entry.name or entry.email,
+    }
+    print(f"[AUTH] doLogin: sucesso -> {authState}")
+    return gr.update(
+        value=f"✅ Bem-vindo, **{uname}** (perfil: {mapped_role})."
+    ), authState
+
+def _doLogout():
+    print("[AUTH] logout")
+    return (
+        {"isAuth": False, "username": None},
+        gr.update(
+            value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
+        gr.update(visible=True),   # viewLogin
+        gr.update(visible=False),  # viewHome
+        gr.update(visible=False),  # viewHomeAdmin
+        gr.update(visible=False),  # viewStudio
+        gr.update(visible=False),  # viewClassrooms
+        gr.update(visible=False),  # viewHistory
+        gr.update(visible=False),  # viewEvaluate
+        gr.update(visible=False),  # viewProgress
+        gr.update(visible=False),  # viewAdminPg
+    )
+
+def listStudents(auth):
+    role = (auth or {}).get("role", "aluno")
+    if str(role).lower() not in ("professor", "admin"):
+        return "⚠️ Apenas professores/admin podem visualizar a lista de alunos."
+    try:
+        records = fetch_users_by_role(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            ROLE_PT_TO_DB.get("aluno", "student"),
+        )
+    except SupabaseConfigurationError:
+        return (
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para visualizar os alunos."
+        )
+    except SupabaseOperationError as err:
+        print(f"[AUTH] listStudents: erro Supabase -> {err}")
+        return f"❌ Erro ao consultar alunos: {err}"
+    except Exception as exc:  # pragma: no cover - caminhos não determinísticos
+        print(f"[AUTH] listStudents: erro inesperado -> {exc}")
+        return f"❌ Erro inesperado ao consultar alunos: {exc}"
+
+    students = []
+    for record in records:
+        label = record.name or record.email or record.id
+        if label:
+            students.append(label)
+
+    if not students:
+        return "Nenhum aluno cadastrado ainda."
+    students.sort(key=lambda x: x.lower())
+    bullet = "\n".join([f"- {s}" for s in students])
+    return f"### Alunos cadastrados ({len(students)})\n\n{bullet}"
+
+def _go_admin(page):
+    vis = {
+        "home": (True, False, False, False, False, False),
+        "classrooms": (False, True, False, False, False, False),
+        "history": (False, False, True, False, False, False),
+        "evaluate": (False, False, False, True, False, False),
+        "progress": (False, False, False, False, True, False),
+        "admin": (False, False, False, False, False, True),
+    }.get(page, (True, False, False, False, False, False))
+    (homeV, clsV, histV, evalV, progV, admV) = vis
+    return (
+        {"page": page},
+        gr.update(visible=homeV),
+        gr.update(visible=clsV),
+        gr.update(visible=histV),
+        gr.update(visible=evalV),
+        gr.update(visible=progV),
+        gr.update(visible=admV),
+    )
+
+# ----- Admin: classrooms -----
+def _refresh_cls_dropdown(classrooms):
+    choices = [(c["name"], c["id"]) for c in (classrooms or [])]
+    return gr.update(choices=choices), gr.update(choices=choices)
+
+def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
+    role = _user_role(auth)
+    if role not in ("admin", "professor"):
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms, "⛔ Apenas professores ou admins podem criar salas."
+        )
+        return classrooms, subjects, md, dd1, dd2
+
+    creator_id = _auth_user_id(auth)
+    if not creator_id:
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms, "⚠️ Faça login para criar salas."
+        )
+        return classrooms, subjects, md, dd1, dd2
+
+    name = (name or "").strip()
+    theme = (theme or "").strip() or name
+    description = (desc or "").strip() or ""
+    if not name:
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms, "⚠️ Informe um nome para a sala."
+        )
+        return classrooms, subjects, md, dd1, dd2
+
+    try:
+        created = create_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            name=name,
+            description=description,
+            theme_name=theme,
+            theme_locked=bool(locked),
+            created_by=creator_id,
+        )
+    except SupabaseConfigurationError:
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
+        )
+        return classrooms, subjects, md, dd1, dd2
+    except SupabaseOperationError as err:
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms, f"❌ Erro ao criar sala: {err}"
+        )
+        return classrooms, subjects, md, dd1, dd2
+
+    classroom_id = (created or {}).get("id")
+    if role == "professor" and classroom_id and creator_id:
+        try:
+            upsert_classroom_teacher(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                classroom_id=classroom_id,
+                teacher_id=creator_id,
+                role_label="owner",
+            )
+        except SupabaseConfigurationError:
+            pass
+        except SupabaseOperationError as err:
+            print(f"[SUPABASE] Falha ao registrar professor responsável: {err}")
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md, dd1, dd2 = _admin_classrooms_outputs(
+        classes, notice or "✅ Sala criada."
+    )
+    return classes, subjects_map, md, dd1, dd2
+
+def refresh_classrooms(classrooms, subjects):
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md, dd1, dd2 = _admin_classrooms_outputs(classes, notice)
+    return classes, subjects_map, md, dd1, dd2
+
+def load_cls_for_edit(cls_id, classrooms):
+    c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
+    if not c:
+        return gr.update(value=""), gr.update(value=""), gr.update(value=""), gr.update(value=True), gr.update(value=False), "⚠️ Sala não encontrada."
+    return gr.update(value=c["name"]), gr.update(value=c["theme_name"]), gr.update(value=c["description"]), gr.update(value=c["theme_locked"]), gr.update(value=c["is_archived"]), ""
+
+def save_cls(cls_id, name, theme, desc, locked, archived, classrooms, subjects):
+    if not cls_id:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []), "⚠️ Selecione uma sala."
+        )
+        return classrooms, subjects, md
+
+    original = next((c for c in (classrooms or []) if c.get("id") == cls_id), None)
+    if not original:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []), "⚠️ Sala não encontrada."
+        )
+        return classrooms, subjects, md
+
+    payload = {
+        "name": (name or "").strip() or original.get("name"),
+        "theme_name": (theme or "").strip() or original.get("theme_name"),
+        "description": (desc or "").strip() or "",
+        "theme_locked": bool(locked),
+        "is_archived": bool(archived),
+    }
+
+    try:
+        update_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            cls_id,
+            **payload,
+        )
+    except SupabaseConfigurationError:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para atualizar salas.",
+        )
+        return classrooms, subjects, md
+    except SupabaseOperationError as err:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            f"❌ Erro ao atualizar sala: {err}",
+        )
+        return classrooms, subjects, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(
+        _render_classrooms_md(classes), notice or "✅ Sala atualizada."
+    )
+    return classes, subjects_map, md
+
+def delete_cls(cls_id, classrooms, subjects):
+    if not cls_id:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []), "⚠️ Selecione uma sala."
+        )
+        return classrooms, subjects, md
+
+    try:
+        delete_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            cls_id,
+        )
+    except SupabaseConfigurationError:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para remover salas.",
+        )
+        return classrooms, subjects, md
+    except SupabaseOperationError as err:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            f"❌ Erro ao remover sala: {err}",
+        )
+        return classrooms, subjects, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(
+        _render_classrooms_md(classes), notice or "✅ Sala removida."
+    )
+    return classes, subjects_map, md
+
+# ----- Admin: membership -----
+def _render_members_md(cls_id, classrooms):
+    c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
+    if not c:
+        return "⚠️ Selecione uma sala."
+    t = c["members"]["teachers"]
+    s = c["members"]["students"]
+    lines = [f"### Membros da sala `{c['name']}`", f"- 👩‍🏫 Professores ({len(t)}): " + (', '.join(t) if t else "—"),
+             f"- 🎓 Alunos ({len(s)}): " + (', '.join(s) if s else "—")]
+    return "\n".join(lines)
+
+def add_teacher(cls_id, uname, classrooms, subjects, auth):
+    uname_norm = _normalize_username(uname)
+    if not cls_id or not uname_norm:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+    if not _is_admin(auth):
+        return (
+            classrooms,
+            subjects,
+            "⛔ Apenas administradores podem gerenciar professores por aqui.",
+        )
+
+    try:
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    classroom = next((c for c in (classrooms or []) if c.get("id") == cls_id), None)
+    role_label = None
+    if classroom and not _normalize_username(classroom.get("owner")):
+        role_label = "owner"
+
+    try:
+        upsert_classroom_teacher(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            teacher_id=record.id,
+            role_label=role_label,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao adicionar professor: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(_render_members_md(cls_id, classes), notice or "✅ Professor adicionado.")
+    return classes, subjects_map, md
+
+def add_student(cls_id, uname, classrooms, subjects):
+    uname_norm = _normalize_username(uname)
+    if not cls_id or not uname_norm:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+
+    try:
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    try:
+        upsert_classroom_student(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            student_id=record.id,
+            status="active",
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao adicionar aluno: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(
+        _render_members_md(cls_id, classes), notice or "✅ Aluno adicionado."
+    )
+    return classes, subjects_map, md
+
+def remove_member(cls_id, uname, classrooms, subjects):
+    uname_norm = _normalize_username(uname)
+    if not cls_id or not uname_norm:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+
+    try:
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    status_messages = []
+    try:
+        remove_classroom_teacher(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            teacher_id=record.id,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes.",
+        )
+    except SupabaseOperationError as err:
+        status_messages.append(f"Professor: {err}")
+
+    try:
+        remove_classroom_student(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            student_id=record.id,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes.",
+        )
+    except SupabaseOperationError as err:
+        status_messages.append(f"Aluno: {err}")
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    base_md = _render_members_md(cls_id, classes)
+    message = (
+        "⚠️ " + "; ".join(status_messages)
+        if status_messages
+        else "✅ Usuário removido."
+    )
+    result = _merge_notice(base_md, message)
+    result = _merge_notice(result, notice)
+    return classes, subjects_map, result
+
+# ----- Teacher helpers -----
+def _get_class_by_id(classrooms, cls_id):
+    return next((x for x in (classrooms or []) if x.get("id") == cls_id), None)
+
+def teacher_load_params(cls_id, classrooms):
+    c = _get_class_by_id(classrooms, cls_id)
+    if not c:
+        return (gr.update(value=0.7), gr.update(value=0.95), gr.update(value=40),
+                gr.update(value=1024), gr.update(value="simples"),
+                gr.update(value="detalhadas"), gr.update(value=""), "⚠️ Sala não encontrada.")
+    cfg = (c.get("theme_config") or {})
+    adv = cfg.get("adv") or {}
+    script = cfg.get("script") or {}
+    return (
+        gr.update(value=float(adv.get("temperature", 0.7))),
+        gr.update(value=float(adv.get("top_p", 0.95))),
+        gr.update(value=int(adv.get("top_k", 40))),
+        gr.update(value=int(adv.get("max_tokens", 1024))),
+        gr.update(value=script.get("estilo", "simples")),
+        gr.update(value=script.get("detalhamento", "detalhadas")),
+        gr.update(value=script.get("extras", "")),
+        "✅ Parâmetros carregados."
+    )
+
+def teacher_save_params(
+    cls_id,
+    temp,
+    top_p,
+    top_k,
+    max_t,
+    estilo,
+    detalhamento,
+    extras,
+    classrooms,
+    subjects,
+    auth,
+):
+    me = _teacher_username(auth)
+    c = _get_class_by_id(classrooms, cls_id)
+    if not c:
+        return classrooms, subjects, "⚠️ Sala não encontrada."
+    teachers = [t.strip().lower() for t in c["members"]["teachers"]]
+    if me not in teachers and not _is_admin(auth):
+        return classrooms, subjects, "⛔ Você não é professor desta sala."
+
+    cfg = {
+        "adv": {
+            "temperature": float(temp),
+            "top_p": float(top_p),
+            "top_k": int(top_k),
+            "max_tokens": int(max_t),
+        },
+        "script": {
+            "estilo": (estilo or "simples"),
+            "detalhamento": (detalhamento or "detalhadas"),
+            "extras": (extras or "").strip(),
+        },
+    }
+
+    try:
+        set_classroom_theme_config(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            theme_config=cfg,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para salvar parâmetros da sala.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao salvar parâmetros: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    msg = notice or "✅ Parâmetros salvos para a sala."
+    return classes, subjects_map, msg
+
+# ----- Teacher membership & subthemes -----
+def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
+    me = _teacher_username(auth)
+    uname_norm = _normalize_username(uname)
+    if not cls_id or not uname_norm:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+    if not me and not _is_admin(auth):
+        return classrooms, subjects, "⚠️ Faça login."
+
+    classroom = _get_class_by_id(classrooms, cls_id)
+    if not classroom:
+        return classrooms, subjects, "⚠️ Sala não encontrada."
+
+    normalized = [_normalize_username(t) for t in classroom["members"]["teachers"]]
+    if me not in normalized and not _is_admin(auth):
+        return classrooms, subjects, "⛔ Você não é professor desta sala."
+
+    owner = _normalize_username(classroom.get("owner"))
+    if owner and me != owner and not _is_admin(auth):
+        return (
+            classrooms,
+            subjects,
+            "⛔ Apenas o professor responsável por esta sala pode adicionar outros professores.",
+        )
+
+    try:
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    role_label = None
+    if not owner and me:
+        role_label = "owner"
+
+    try:
+        upsert_classroom_teacher(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            teacher_id=record.id,
+            role_label=role_label,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao adicionar professor: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(
+        _render_teacher_members_md(cls_id, classes), notice or "✅ Professor adicionado."
+    )
+    return classes, subjects_map, md
+
+def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
+    name = (name or "").strip()
+    theme = (theme or "").strip() or name
+    me = _teacher_username(auth)
+    role = _user_role(auth)
+
+    if role not in ("professor", "admin"):
+        md, dd = _teacher_classrooms_outputs(
+            auth, classrooms, "⛔ Apenas professores ou admins podem criar salas."
+        )
+        return classrooms, subjects, md, dd, dd, "⛔ Apenas professores ou admins podem criar salas."
+    if not me and not _is_admin(auth):
+        md, dd = _teacher_classrooms_outputs(
+            auth, classrooms, "⚠️ Faça login."
+        )
+        return classrooms, subjects, md, dd, dd, "⚠️ Faça login."
+    if not name:
+        md, dd = _teacher_classrooms_outputs(
+            auth, classrooms, "⚠️ Informe um nome para a sala."
+        )
+        return classrooms, subjects, md, dd, dd, "⚠️ Informe um nome para a sala."
+
+    creator_id = _auth_user_id(auth)
+    if not creator_id and not _is_admin(auth):
+        md, dd = _teacher_classrooms_outputs(
+            auth, classrooms, "⚠️ Não foi possível identificar o usuário logado."
+        )
+        return classrooms, subjects, md, dd, dd, "⚠️ Não foi possível identificar o usuário logado."
+
+    description = (desc or "").strip() or ""
+    try:
+        created = create_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            name=name,
+            description=description,
+            theme_name=theme,
+            theme_locked=bool(locked),
+            created_by=creator_id or "",
+        )
+    except SupabaseConfigurationError:
+        md, dd = _teacher_classrooms_outputs(
+            auth, classrooms,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
+        )
+        return classrooms, subjects, md, dd, dd, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas."
+    except SupabaseOperationError as err:
+        md, dd = _teacher_classrooms_outputs(
+            auth, classrooms, f"❌ Erro ao criar sala: {err}"
+        )
+        return classrooms, subjects, md, dd, dd, f"❌ Erro ao criar sala: {err}"
+
+    classroom_id = (created or {}).get("id")
+    if _is_teacher(auth) and me and creator_id and classroom_id:
+        try:
+            upsert_classroom_teacher(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                classroom_id=classroom_id,
+                teacher_id=creator_id,
+                role_label="owner",
+            )
+        except SupabaseConfigurationError:
+            pass
+        except SupabaseOperationError as err:
+            print(f"[SUPABASE] Falha ao definir professor responsável: {err}")
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md, dd = _teacher_classrooms_outputs(auth, classes, notice)
+    message = notice or "✅ Sala criada."
+    return classes, subjects_map, md, dd, dd, message
+
+def teacher_refresh(auth, classrooms, subjects):
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md, dd = _teacher_classrooms_outputs(auth, classes, notice)
+    return classes, subjects_map, md, dd
+
+def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
+    me = _teacher_username(auth)
+    uname_norm = _normalize_username(uname)
+    if not cls_id or not uname_norm:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+
+    classroom = _get_class_by_id(classrooms, cls_id)
+    if not classroom:
+        return classrooms, subjects, "⚠️ Sala não encontrada."
+
+    teachers = [t.strip().lower() for t in classroom["members"]["teachers"]]
+    if me not in teachers and not _is_admin(auth):
+        return classrooms, subjects, "⛔ Você não é professor desta sala."
+
+    try:
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    try:
+        upsert_classroom_student(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            student_id=record.id,
+            status="active",
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao adicionar aluno: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(
+        _render_teacher_members_md(cls_id, classes), notice or "✅ Aluno adicionado."
+    )
+    return classes, subjects_map, md
+
+def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
+    me = _teacher_username(auth)
+    uname_norm = _normalize_username(uname)
+    if not cls_id or not uname_norm:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+
+    classroom = _get_class_by_id(classrooms, cls_id)
+    if not classroom:
+        return classrooms, subjects, "⚠️ Sala não encontrada."
+
+    teachers = [t.strip().lower() for t in classroom["members"]["teachers"]]
+    if me not in teachers and not _is_admin(auth):
+        return classrooms, subjects, "⛔ Você não é professor desta sala."
+
+    try:
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    try:
+        remove_classroom_student(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            student_id=record.id,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao remover aluno: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(
+        _render_teacher_members_md(cls_id, classes), notice or "✅ Aluno removido."
+    )
+    return classes, subjects_map, md
+
+def teacher_subjects_refresh(auth, classrooms, selected_id, subjects_by_class):
+    return _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class)
+
+def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
+    me = _teacher_username(auth)
+    if not selected_id:
+        return classrooms, subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala."
+    classroom = _get_class_by_id(classrooms, selected_id)
+    if not classroom:
+        return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Sala não encontrada."
+    if me not in [t.strip().lower() for t in classroom["members"]["teachers"]] and not _is_admin(auth):
+        return classrooms, subjects_by_class, gr.update(), gr.update(), "⛔ Você não é professor desta sala."
+    subj_name = (subj or "").strip()
+    if not subj_name:
+        return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Informe o nome do subtema."
+    current = list(subjects_by_class.get(selected_id, []))
+    if any(s.get("name", "").lower() == subj_name.lower() for s in current):
+        return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Esse subtema já existe."
+
+    creator_id = _auth_user_id(auth) or ""
+    try:
+        create_subject_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=selected_id,
+            name=subj_name,
+            created_by=creator_id,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(),
+            gr.update(),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects_by_class, gr.update(), gr.update(), f"❌ Erro ao adicionar subtema: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    dd, chk, md = _subjects_choices_teacher(auth, classes, selected_id, subjects_map)
+    md = _merge_notice(md, notice or "✅ Subtema adicionado.")
+    return classes, subjects_map, dd, chk, md
+
+def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classrooms):
+    if not selected_id:
+        return classrooms, subjects_by_class, "ℹ️ Selecione uma sala."
+    classroom = _get_class_by_id(classrooms, selected_id)
+    if not classroom:
+        return classrooms, subjects_by_class, "⚠️ Sala não encontrada."
+    me = _teacher_username(auth)
+    if me not in [t.strip().lower() for t in classroom["members"]["teachers"]] and not _is_admin(auth):
+        return classrooms, subjects_by_class, "⛔ Você não é professor desta sala."
+
+    current = list(subjects_by_class.get(selected_id, []))
+    actives_set = set(actives or [])
+
+    try:
+        for subject in current:
+            subject_id = subject.get("id")
+            if not subject_id:
+                continue
+            desired_active = subject.get("name") in actives_set
+            update_subject_active(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                subject_id=subject_id,
+                is_active=desired_active,
+            )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects_by_class,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
+        )
+    except SupabaseOperationError as err:
+        return classrooms, subjects_by_class, f"❌ Erro ao atualizar subtemas: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    md = _merge_notice(
+        _render_subjects_md(subjects_map, selected_id, classes or []),
+        notice or "✅ Subtemas atualizados.",
+    )
+    return classes, subjects_map, md
+
+def _teacher_on_select(auth, classrooms, selected_id, subjects_by_class):
+    md_members = _render_teacher_members_md(selected_id, classrooms)
+    dd, chk, md_subjects = _subjects_choices_teacher(
+        auth, classrooms, selected_id, subjects_by_class)
+    return md_members, dd, chk, md_subjects
+
+# ----- Admin: subthemes -----
+def _admin_subjects_ui(classrooms, subjects_by_class, selected_id, notice=""):
+    chk = gr.update(choices=[], value=[])
+    md = _render_subjects_md(subjects_by_class, selected_id, classrooms or [])
+    if selected_id:
+        lst = list(subjects_by_class.get(selected_id, []))
+        names = [s.get("name") for s in lst]
+        active = [s.get("name") for s in lst if s.get("active")]
+        chk = gr.update(choices=names, value=active)
+    md = _merge_notice(md, notice)
+    return chk, md
+
+def admin_refresh_subjects(classrooms, subjects_by_class, selected_id):
+    return _admin_subjects_ui(classrooms, subjects_by_class, selected_id)
+
+def admin_add_subject(cls_id, subj, subjects_by_class, classrooms, auth):
+    if not cls_id:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            None,
+            "ℹ️ Selecione uma sala para adicionar subtemas.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    subj_name = (subj or "").strip()
+    if not subj_name:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Informe o nome do subtema.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    existing = list(subjects_by_class.get(cls_id, []))
+    if any(s.get("name", "").lower() == subj_name.lower() for s in existing):
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Esse subtema já existe.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    creator_id = _auth_user_id(auth) or ""
+    try:
+        create_subject_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            name=subj_name,
+            created_by=creator_id,
+        )
+    except SupabaseConfigurationError:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
+        )
+        return classrooms, subjects_by_class, chk, md
+    except SupabaseOperationError as err:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            f"❌ Erro ao adicionar subtema: {err}",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    chk, md = _admin_subjects_ui(
+        classes,
+        subjects_map,
+        cls_id,
+        notice or "✅ Subtema adicionado.",
+    )
+    return classes, subjects_map, chk, md
+
+def admin_apply_active(cls_id, actives, subjects_by_class, classrooms):
+    if not cls_id:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            None,
+            "⚠️ Selecione uma sala.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    lst = list(subjects_by_class.get(cls_id, []))
+    names = set(actives or [])
+    try:
+        for entry in lst:
+            subject_id = entry.get("id")
+            if not subject_id:
+                continue
+            update_subject_active(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                subject_id=subject_id,
+                is_active=entry.get("name") in names,
+            )
+    except SupabaseConfigurationError:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
+        )
+        return classrooms, subjects_by_class, chk, md
+    except SupabaseOperationError as err:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            f"❌ Erro ao atualizar subtemas: {err}",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    chk, md = _admin_subjects_ui(
+        classes,
+        subjects_map,
+        cls_id,
+        notice or "✅ Subtemas atualizados.",
+    )
+    return classes, subjects_map, chk, md
+
+# ----- Evaluation & reporting -----
+def refresh_history(chats_map, mine_only, auth):
+    user = (auth or {}).get("username")
+    return _render_history_md(chats_map, owner=user if mine_only else None)
+def eval_refresh_dropdown(chats_map):
+    ids = []
+    for cid, chat in (chats_map or {}).items():
+        if any(m for m in chat["messages"] if m["role"] == "user"):
+            ids.append((chat.get("title") or cid, cid))
+    default_val = ids[0][1] if ids else None
+    return gr.update(choices=ids, value=default_val)
+
+def eval_load(chat_id, chats_map=None):
+    print(
+        f"[EVAL] eval_load: chat_id={chat_id!r} has_map={bool(chats_map)}")
+    if not chat_id:
+        return "ℹ️ Selecione um chat para visualizar/avaliar."
+    chat = (chats_map or {}).get(chat_id)
+    return _render_eval_md(chat)
+
+def eval_save(chat_id, score, rubric, feedback, chats_map):
+    if not chat_id or chat_id not in (chats_map or {}):
+        return chats_map, "⚠️ Selecione um chat válido."
+    cm = chats_map[chat_id]
+    cm["score"] = int(score) if score is not None else None
+    cm["rubric"] = (rubric or "").strip() or None
+    cm["feedback"] = (feedback or "").strip() or None
+    return chats_map, "✅ Avaliação salva."
+
+def refresh_progress(chats_map, mine_only, auth):
+    user = (auth or {}).get("username")
+    return _render_progress_md(chats_map, user_filter=user if mine_only else None)
+
+# ----- Student flows -----
+def student_rooms_refresh(auth, classrooms, subjects_by_class):
+    my = _student_classes(auth, classrooms or [])
+    choices = [(c["name"], c["id"]) for c in my]
+    default = choices[0][1] if choices else None
+    info = _render_class_details(
+        default, classrooms, subjects_by_class or {}) if default else "⚠️ Você ainda não está em nenhuma sala."
+    return gr.update(choices=choices, value=default), info, default
+
+def student_on_select(cid, classrooms, subjects_by_class):
+    return _render_class_details(cid, classrooms, subjects_by_class), cid
+
+def student_go_rooms():
+    return gr.update(visible=False), gr.update(visible=True)
+
+def student_rooms_back():
+    return gr.update(visible=True), gr.update(visible=False)
+
+def student_go_setup(auth, cid, classrooms, subjects_by_class):
+    c = next((x for x in (classrooms or []) if x["id"] == cid), None)
+    if not c:
+        return gr.update(visible=True), gr.update(visible=False), gr.update(value=""), gr.update(choices=[])
+    theme = c.get("theme_name") or c["name"]
+    subs = _student_subtheme_choices(cid, subjects_by_class or {})
+    return gr.update(visible=False), gr.update(visible=True), gr.update(value=theme), gr.update(choices=subs, value=subs)
+
+def _build_extras_from_classroom(theme, subthemes, interesses):
+    # Preferimos manter "extras" enxuto; os subtemas e interesses também vão como variáveis para o builder
+    subs_txt = ", ".join(subthemes or [])
+    intr_txt = (interesses or "").strip()
+    parts = []
+    if subs_txt:
+        parts.append(f"Priorize os subtemas: {subs_txt}.")
+    if intr_txt:
+        parts.append(
+            f"Correlacione com temas de interesse do aluno: {intr_txt}.")
+    parts.append("Adote o tom motivador e pedagógico.")
+    return " ".join(parts)
+
+def student_apply_setup(cid, theme, estilo, detalhamento, objetivo, interesses, subthemes, scriptState):
+    # Monta extras (texto) e chama builder com variáveis estruturadas
+    extras = _build_extras_from_classroom(theme, subthemes, interesses)
+    new_script = buildCustomScript(
+        theme, estilo, detalhamento, objetivo, extras,
+        subtemas=subthemes, interesses=interesses
+    )
+    return new_script, gr.update(visible=False), gr.update(visible=True)
+
+def _student_chat_back_to_setup():
+    return gr.update(visible=True), gr.update(visible=False)
+
+def _student_chat_enable():
+    return gr.update(interactive=True)
+
+
 # ================================== APP / UI ==================================
 with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # Estados principais
@@ -385,99 +1773,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     currentChatId = gr.State(None)     # chat_id atual
     adminNavState = gr.State({"page": "home"})
     studentSelectedClass = gr.State(None)   # id da sala escolhida pelo aluno
-
-    def _load_domain_state(current_classrooms=None, current_subjects=None):
-        try:
-            raw_classrooms, raw_subjects = fetch_classroom_domain(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                users_table=SUPABASE_USERS_TABLE,
-            )
-        except SupabaseConfigurationError:
-            warn = (
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar as salas."
-            )
-            return current_classrooms or [], current_subjects or {}, warn
-        except SupabaseOperationError as err:
-            warn = f"❌ Erro ao consultar salas: {err}"
-            return current_classrooms or [], current_subjects or {}, warn
-
-        normalized_classrooms = []
-        for item in raw_classrooms:
-            teachers = {
-                _normalize_username(entry.get("login"))
-                for entry in item.get("teachers", [])
-                if entry.get("login")
-            }
-            students = {
-                _normalize_username(entry.get("login"))
-                for entry in item.get("students", [])
-                if entry.get("login")
-                and str(entry.get("status", "active")).lower() == "active"
-            }
-            owner_login = _normalize_username(item.get("owner_login"))
-            if owner_login:
-                teachers.add(owner_login)
-            normalized_classrooms.append(
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name"),
-                    "description": item.get("description") or "",
-                    "theme_name": item.get("theme_name") or item.get("name"),
-                    "theme_config": item.get("theme_config") or {},
-                    "theme_locked": bool(item.get("theme_locked")),
-                    "is_archived": bool(item.get("is_archived")),
-                    "members": {
-                        "teachers": sorted(t for t in teachers if t),
-                        "students": sorted(students),
-                    },
-                    "owner": owner_login,
-                    "owner_id": item.get("owner_id"),
-                }
-            )
-
-        normalized_classrooms.sort(key=lambda cls: (cls.get("name") or "").lower())
-
-        normalized_subjects = {}
-        for cid, entries in raw_subjects.items():
-            normalized_subjects[cid] = [
-                {
-                    "id": entry.get("id"),
-                    "name": entry.get("name"),
-                    "active": bool(entry.get("is_active", True)),
-                }
-                for entry in entries
-            ]
-            normalized_subjects[cid].sort(
-                key=lambda item: (item.get("name") or "").lower()
-            )
-
-        return normalized_classrooms, normalized_subjects, ""
-
-    def _refresh_states(current_classrooms=None, current_subjects=None):
-        classrooms, subjects, notice = _load_domain_state(
-            current_classrooms, current_subjects
-        )
-        return classrooms, subjects, notice
-
-    def _sync_domain_after_auth(auth, classrooms, subjects):
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        if notice:
-            print(f"[SUPABASE] {notice}")
-        return classes, subjects_map
-
-    def _admin_classrooms_outputs(classrooms, notice=""):
-        md = _render_classrooms_md(classrooms or [])
-        md = _merge_notice(md, notice)
-        dd1, dd2 = _refresh_cls_dropdown(classrooms or [])
-        return md, dd1, dd2
-
-    def _teacher_classrooms_outputs(auth, classrooms, notice=""):
-        relevant = _teacher_classes(auth, classrooms or [])
-        md = _render_classrooms_md(relevant)
-        md = _merge_notice(md, notice)
-        dd = gr.update(choices=_teacher_choices(auth, classrooms or []))
-        return md, dd
 
     # Header
     header_msg = "### 👋 Bem-vindo! Faça login para continuar."
@@ -815,12 +2110,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         exportBtn.click(createChatPdf, inputs=[
                         chatbot, docsState], outputs=gr.File())
 
-        def _back_home(auth):
-            role = (auth or {}).get("role", "aluno")
-            if str(role).lower() == "admin":
-                return (gr.update(visible=False), gr.update(visible=True), gr.update(visible=False))
-            else:
-                return (gr.update(visible=False), gr.update(visible=False), gr.update(visible=True))
         btnBackHome.click(_back_home, inputs=authState, outputs=[
                           viewStudio, viewHomeAdmin, viewHome])
 
@@ -873,297 +2162,11 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                     show_label=False, placeholder="Digite sua mensagem ou envie um PDF...", sources=["upload"], interactive=True
                 )
 
-    def student_setup_from_class(selected_id, classrooms, subjects_by_class):
-        c = _get_class_by_id(classrooms, selected_id)
-        if not c:
-            return (
-                gr.update(value=""),  # stAssunto
-                gr.update(choices=[], value=[]),  # stSubthemes
-                gr.update(value="simples"), gr.update(value="detalhadas"),
-                gr.update(value=""), gr.update(
-                    value=""),  # objetivo, interesses
-                gr.update(visible=True), gr.update(
-                    visible=False),  # stCfgCol, stChatCol
-                advState.value, "⚠️ Sala não encontrada."
-            )
-        assunto = c.get("theme_name") or c.get("name") or ""
-        # subtemas dessa sala:
-        sbj = list(subjects_by_class.get(selected_id, []))
-        st_choices = [s["name"] for s in sbj if s.get("name")]
-        # configs da sala:
-        cfg = c.get("theme_config") or {}
-        script = cfg.get("script") or {}
-        adv = cfg.get("adv") or {}
-        # atualiza advState global para o chat dessa sala
-        new_adv = {
-            "temperature": float(adv.get("temperature", 0.7)),
-            "top_p": float(adv.get("top_p", 0.95)),
-            "top_k": int(adv.get("top_k", 40)),
-            "max_tokens": int(adv.get("max_tokens", 1024)),
-        }
-        # retorna updates para a UI de setup + troca advState e mostra coluna do chat
-        return (
-            gr.update(value=assunto),
-            gr.update(choices=st_choices, value=[]),
-            gr.update(value=script.get("estilo", "simples")),
-            gr.update(value=script.get("detalhamento", "detalhadas")),
-            gr.update(value=""),  # objetivo livre do aluno
-            gr.update(value=""),  # interesses livres do aluno
-            gr.update(visible=True), gr.update(visible=False),
-            new_adv, "✅ Parâmetros da sala aplicados."
-        )
-
     # ======================== Navegação / Autenticação ========================
-
-    def _route_home(auth):
-        is_auth = bool(auth and auth.get("isAuth")
-                       is True and auth.get("username"))
-        user = (auth or {}).get("username") or ""
-        role = (auth or {}).get("role", "aluno")
-        print(
-            f"[NAV] _route_home: isAuth={is_auth} user='{user}' role='{role}'")
-
-        if not is_auth:
-            return (
-                gr.update(
-                    value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
-                gr.update(visible=True),   # viewLogin
-                gr.update(visible=False),  # viewHome
-                gr.update(visible=False),  # viewHomeAdmin
-                gr.update(value="")        # homeGreet
-            )
-        role = str(role).lower()
-        header_txt = f"### 👋 Olá, **{user}**! (perfil: {role})"
-        if role == "admin":
-            return (
-                gr.update(value=header_txt, visible=True),
-                gr.update(visible=False),
-                gr.update(visible=False),
-                gr.update(visible=True),
-                gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{user}**")
-            )
-        else:
-            return (
-                gr.update(value=header_txt, visible=True),
-                gr.update(visible=False),
-                gr.update(visible=True),
-                gr.update(visible=False),
-                gr.update(value=f"## 🏠 Home — bem-vindo, **{user}**")
-            )
-
-    def _teacherUi(auth):
-        role = (auth or {}).get("role", "aluno")
-        is_prof = (str(role).lower() == "professor")
-        return gr.update(visible=is_prof), gr.update(value="")
-
-    def _studentUi(auth):
-        role = (auth or {}).get("role", "aluno")
-        is_student_or_admin = str(role).lower() in ("aluno", "admin")
-        return gr.update(visible=is_student_or_admin)
 
     # ======== Auth ========
 
-    def switch_auth_mode(mode):
-        is_register = str(mode or "").strip().lower() == "registrar"
-        return (
-            gr.update(visible=is_register),
-            gr.update(visible=is_register),
-            gr.update(visible=not is_register),
-            gr.update(visible=is_register),
-            gr.update(value=""),
-        )
-
-    def doRegister(username, password, email, full_name, role, authState):
-        raw_username = (username or "").strip()
-        raw_email = (email or "").strip()
-        login_email = raw_email.lower()
-        name = (full_name or "").strip()
-        pw = (password or "").strip()
-        print(
-            f"[AUTH] doRegister: username='{raw_username.lower()}' email='{login_email}' role='{role}'"
-        )
-        if not raw_username or not login_email or not name or not pw:
-            return gr.update(value="⚠️ Informe usuário, e-mail, nome e senha."), authState
-
-        role_pt = (role or "aluno").strip().lower() or "aluno"
-        supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
-
-        display_name = name or raw_username or login_email
-
-        try:
-            created = create_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                login=login_email,
-                password_hash=_hashPw(pw),
-                role=supabase_role,
-                display_name=display_name,
-            )
-            print(f"[AUTH] doRegister: Supabase created -> {created}")
-        except SupabaseConfigurationError:
-            warn = (
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de registrar usuários."
-            )
-            print("[AUTH] doRegister: configuração Supabase ausente")
-            return gr.update(value=warn), authState
-        except SupabaseUserExistsError:
-            print(
-                f"[AUTH] doRegister: usuário já existe no Supabase -> {login_email}"
-            )
-            return gr.update(value="⚠️ Usuário já existe."), authState
-        except SupabaseOperationError as err:
-            print(f"[AUTH] doRegister: erro Supabase -> {err}")
-            return gr.update(value=f"❌ Erro ao registrar usuário: {err}"), authState
-        except Exception as exc:  # pragma: no cover - caminhos não determinísticos
-            print(f"[AUTH] doRegister: erro inesperado -> {exc}")
-            return gr.update(value=f"❌ Erro inesperado ao registrar usuário: {exc}"), authState
-
-        mapped_role = ROLE_DB_TO_PT.get(
-            (created.role or supabase_role or "student").strip().lower(),
-            role_pt,
-        )
-        auth_username = login_email or created.email or raw_username.lower()
-        authState = {
-            "isAuth": True,
-            "username": auth_username,
-            "role": mapped_role,
-            "display_name": display_name,
-            "user_id": created.id,
-        }
-        print(f"[AUTH] doRegister: registrado e logado -> {authState}")
-        return gr.update(
-            value=(
-                f"✅ Registrado e logado como **{display_name}** "
-                f"(`{auth_username}`) (perfil: {mapped_role})."
-            )
-        ), authState
-
-    def doLogin(username, password, authState):
-        raw_username = (username or "").strip()
-        uname = raw_username.lower()
-        pw = (password or "").strip()
-        print(f"[AUTH] doLogin: uname='{uname}'")
-        if not uname or not pw:
-            return gr.update(value="⚠️ Informe usuário e senha."), authState
-
-        try:
-            entry = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname,
-            )
-        except SupabaseConfigurationError:
-            warn = (
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de realizar o login."
-            )
-            print("[AUTH] doLogin: configuração Supabase ausente")
-            return gr.update(value=warn), authState
-        except SupabaseOperationError as err:
-            print(f"[AUTH] doLogin: erro Supabase -> {err}")
-            return gr.update(value=f"❌ Erro ao consultar usuário: {err}"), authState
-        except Exception as exc:  # pragma: no cover - caminhos não determinísticos
-            print(f"[AUTH] doLogin: erro inesperado -> {exc}")
-            return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
-
-        if not entry:
-            print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
-            return gr.update(value="❌ Usuário ou senha incorretos."), authState
-
-        expected_hash = entry.password_hash or ""
-        if expected_hash != _hashPw(pw):
-            print(f"[AUTH] doLogin: senha incorreta -> {uname}")
-            return gr.update(value="❌ Usuário ou senha incorretos."), authState
-
-        mapped_role = ROLE_DB_TO_PT.get(
-            (entry.role or "student").strip().lower(),
-            "aluno",
-        )
-        authState = {
-            "isAuth": True,
-            "username": uname,
-            "role": mapped_role,
-            "user_id": entry.id,
-            "display_name": entry.name or entry.email,
-        }
-        print(f"[AUTH] doLogin: sucesso -> {authState}")
-        return gr.update(
-            value=f"✅ Bem-vindo, **{uname}** (perfil: {mapped_role})."
-        ), authState
-
-    def _doLogout():
-        print("[AUTH] logout")
-        return (
-            {"isAuth": False, "username": None},
-            gr.update(
-                value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
-            gr.update(visible=True),   # viewLogin
-            gr.update(visible=False),  # viewHome
-            gr.update(visible=False),  # viewHomeAdmin
-            gr.update(visible=False),  # viewStudio
-            gr.update(visible=False),  # viewClassrooms
-            gr.update(visible=False),  # viewHistory
-            gr.update(visible=False),  # viewEvaluate
-            gr.update(visible=False),  # viewProgress
-            gr.update(visible=False),  # viewAdminPg
-        )
-
-    def listStudents(auth):
-        role = (auth or {}).get("role", "aluno")
-        if str(role).lower() not in ("professor", "admin"):
-            return "⚠️ Apenas professores/admin podem visualizar a lista de alunos."
-        try:
-            records = fetch_users_by_role(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                ROLE_PT_TO_DB.get("aluno", "student"),
-            )
-        except SupabaseConfigurationError:
-            return (
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para visualizar os alunos."
-            )
-        except SupabaseOperationError as err:
-            print(f"[AUTH] listStudents: erro Supabase -> {err}")
-            return f"❌ Erro ao consultar alunos: {err}"
-        except Exception as exc:  # pragma: no cover - caminhos não determinísticos
-            print(f"[AUTH] listStudents: erro inesperado -> {exc}")
-            return f"❌ Erro inesperado ao consultar alunos: {exc}"
-
-        students = []
-        for record in records:
-            label = record.name or record.email or record.id
-            if label:
-                students.append(label)
-
-        if not students:
-            return "Nenhum aluno cadastrado ainda."
-        students.sort(key=lambda x: x.lower())
-        bullet = "\n".join([f"- {s}" for s in students])
-        return f"### Alunos cadastrados ({len(students)})\n\n{bullet}"
-
     # ======== Admin: Nav entre páginas ========
-    def _go_admin(page):
-        vis = {
-            "home": (True, False, False, False, False, False),
-            "classrooms": (False, True, False, False, False, False),
-            "history": (False, False, True, False, False, False),
-            "evaluate": (False, False, False, True, False, False),
-            "progress": (False, False, False, False, True, False),
-            "admin": (False, False, False, False, False, True),
-        }.get(page, (True, False, False, False, False, False))
-        (homeV, clsV, histV, evalV, progV, admV) = vis
-        return (
-            {"page": page},
-            gr.update(visible=homeV),
-            gr.update(visible=clsV),
-            gr.update(visible=histV),
-            gr.update(visible=evalV),
-            gr.update(visible=progV),
-            gr.update(visible=admV),
-        )
-
     navClassrooms.click(lambda: _go_admin("classrooms"),
                         outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
     navHistory.click(lambda: _go_admin("history"),
@@ -1176,349 +2179,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== Admin: Salas (CRUD) ========
-    def _refresh_cls_dropdown(classrooms):
-        choices = [(c["name"], c["id"]) for c in (classrooms or [])]
-        return gr.update(choices=choices), gr.update(choices=choices)
-
-    def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
-        role = _user_role(auth)
-        if role not in ("admin", "professor"):
-            md, dd1, dd2 = _admin_classrooms_outputs(
-                classrooms, "⛔ Apenas professores ou admins podem criar salas."
-            )
-            return classrooms, subjects, md, dd1, dd2
-
-        creator_id = _auth_user_id(auth)
-        if not creator_id:
-            md, dd1, dd2 = _admin_classrooms_outputs(
-                classrooms, "⚠️ Faça login para criar salas."
-            )
-            return classrooms, subjects, md, dd1, dd2
-
-        name = (name or "").strip()
-        theme = (theme or "").strip() or name
-        description = (desc or "").strip() or ""
-        if not name:
-            md, dd1, dd2 = _admin_classrooms_outputs(
-                classrooms, "⚠️ Informe um nome para a sala."
-            )
-            return classrooms, subjects, md, dd1, dd2
-
-        try:
-            created = create_classroom_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                name=name,
-                description=description,
-                theme_name=theme,
-                theme_locked=bool(locked),
-                created_by=creator_id,
-            )
-        except SupabaseConfigurationError:
-            md, dd1, dd2 = _admin_classrooms_outputs(
-                classrooms,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
-            )
-            return classrooms, subjects, md, dd1, dd2
-        except SupabaseOperationError as err:
-            md, dd1, dd2 = _admin_classrooms_outputs(
-                classrooms, f"❌ Erro ao criar sala: {err}"
-            )
-            return classrooms, subjects, md, dd1, dd2
-
-        classroom_id = (created or {}).get("id")
-        if role == "professor" and classroom_id and creator_id:
-            try:
-                upsert_classroom_teacher(
-                    SUPABASE_URL,
-                    SUPABASE_SERVICE_ROLE_KEY,
-                    classroom_id=classroom_id,
-                    teacher_id=creator_id,
-                    role_label="owner",
-                )
-            except SupabaseConfigurationError:
-                pass
-            except SupabaseOperationError as err:
-                print(f"[SUPABASE] Falha ao registrar professor responsável: {err}")
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md, dd1, dd2 = _admin_classrooms_outputs(
-            classes, notice or "✅ Sala criada."
-        )
-        return classes, subjects_map, md, dd1, dd2
-
-    def refresh_classrooms(classrooms, subjects):
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md, dd1, dd2 = _admin_classrooms_outputs(classes, notice)
-        return classes, subjects_map, md, dd1, dd2
-
-    def load_cls_for_edit(cls_id, classrooms):
-        c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
-        if not c:
-            return gr.update(value=""), gr.update(value=""), gr.update(value=""), gr.update(value=True), gr.update(value=False), "⚠️ Sala não encontrada."
-        return gr.update(value=c["name"]), gr.update(value=c["theme_name"]), gr.update(value=c["description"]), gr.update(value=c["theme_locked"]), gr.update(value=c["is_archived"]), ""
-
-    def save_cls(cls_id, name, theme, desc, locked, archived, classrooms, subjects):
-        if not cls_id:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []), "⚠️ Selecione uma sala."
-            )
-            return classrooms, subjects, md
-
-        original = next((c for c in (classrooms or []) if c.get("id") == cls_id), None)
-        if not original:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []), "⚠️ Sala não encontrada."
-            )
-            return classrooms, subjects, md
-
-        payload = {
-            "name": (name or "").strip() or original.get("name"),
-            "theme_name": (theme or "").strip() or original.get("theme_name"),
-            "description": (desc or "").strip() or "",
-            "theme_locked": bool(locked),
-            "is_archived": bool(archived),
-        }
-
-        try:
-            update_classroom_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                cls_id,
-                **payload,
-            )
-        except SupabaseConfigurationError:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []),
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para atualizar salas.",
-            )
-            return classrooms, subjects, md
-        except SupabaseOperationError as err:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []),
-                f"❌ Erro ao atualizar sala: {err}",
-            )
-            return classrooms, subjects, md
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(
-            _render_classrooms_md(classes), notice or "✅ Sala atualizada."
-        )
-        return classes, subjects_map, md
-
-    def delete_cls(cls_id, classrooms, subjects):
-        if not cls_id:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []), "⚠️ Selecione uma sala."
-            )
-            return classrooms, subjects, md
-
-        try:
-            delete_classroom_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                cls_id,
-            )
-        except SupabaseConfigurationError:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []),
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para remover salas.",
-            )
-            return classrooms, subjects, md
-        except SupabaseOperationError as err:
-            md = _merge_notice(
-                _render_classrooms_md(classrooms or []),
-                f"❌ Erro ao remover sala: {err}",
-            )
-            return classrooms, subjects, md
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(
-            _render_classrooms_md(classes), notice or "✅ Sala removida."
-        )
-        return classes, subjects_map, md
-
-    def _render_members_md(cls_id, classrooms):
-        c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
-        if not c:
-            return "⚠️ Selecione uma sala."
-        t = c["members"]["teachers"]
-        s = c["members"]["students"]
-        lines = [f"### Membros da sala `{c['name']}`", f"- 👩‍🏫 Professores ({len(t)}): " + (', '.join(t) if t else "—"),
-                 f"- 🎓 Alunos ({len(s)}): " + (', '.join(s) if s else "—")]
-        return "\n".join(lines)
-
-    def add_teacher(cls_id, uname, classrooms, subjects, auth):
-        uname_norm = _normalize_username(uname)
-        if not cls_id or not uname_norm:
-            return classrooms, subjects, "⚠️ Informe sala e username."
-        if not _is_admin(auth):
-            return (
-                classrooms,
-                subjects,
-                "⛔ Apenas administradores podem gerenciar professores por aqui.",
-            )
-
-        try:
-            record = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname_norm,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
-
-        if not record or not record.id:
-            return classrooms, subjects, "⚠️ Usuário não encontrado."
-
-        classroom = next((c for c in (classrooms or []) if c.get("id") == cls_id), None)
-        role_label = None
-        if classroom and not _normalize_username(classroom.get("owner")):
-            role_label = "owner"
-
-        try:
-            upsert_classroom_teacher(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                teacher_id=record.id,
-                role_label=role_label,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao adicionar professor: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(_render_members_md(cls_id, classes), notice or "✅ Professor adicionado.")
-        return classes, subjects_map, md
-
-    def add_student(cls_id, uname, classrooms, subjects):
-        uname_norm = _normalize_username(uname)
-        if not cls_id or not uname_norm:
-            return classrooms, subjects, "⚠️ Informe sala e username."
-
-        try:
-            record = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname_norm,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
-
-        if not record or not record.id:
-            return classrooms, subjects, "⚠️ Usuário não encontrado."
-
-        try:
-            upsert_classroom_student(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                student_id=record.id,
-                status="active",
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao adicionar aluno: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(
-            _render_members_md(cls_id, classes), notice or "✅ Aluno adicionado."
-        )
-        return classes, subjects_map, md
-
-    def remove_member(cls_id, uname, classrooms, subjects):
-        uname_norm = _normalize_username(uname)
-        if not cls_id or not uname_norm:
-            return classrooms, subjects, "⚠️ Informe sala e username."
-
-        try:
-            record = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname_norm,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
-
-        if not record or not record.id:
-            return classrooms, subjects, "⚠️ Usuário não encontrado."
-
-        status_messages = []
-        try:
-            remove_classroom_teacher(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                teacher_id=record.id,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes.",
-            )
-        except SupabaseOperationError as err:
-            status_messages.append(f"Professor: {err}")
-
-        try:
-            remove_classroom_student(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                student_id=record.id,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes.",
-            )
-        except SupabaseOperationError as err:
-            status_messages.append(f"Aluno: {err}")
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        base_md = _render_members_md(cls_id, classes)
-        message = (
-            "⚠️ " + "; ".join(status_messages)
-            if status_messages
-            else "✅ Usuário removido."
-        )
-        result = _merge_notice(base_md, message)
-        result = _merge_notice(result, notice)
-        return classes, subjects_map, result
-
     btnAddClass.click(
         add_classroom,
         inputs=[clsName, clsTheme, clsDesc, clsLocked, classroomsState, subjectsState, authState],
@@ -1597,427 +2257,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     btnTeacherBack.click(lambda: (gr.update(visible=True), gr.update(visible=False)),
                          outputs=[viewHome, viewTeacher])
 
-    def _get_class_by_id(classrooms, cls_id):
-        return next((x for x in (classrooms or []) if x.get("id") == cls_id), None)
-
-    def teacher_load_params(cls_id, classrooms):
-        c = _get_class_by_id(classrooms, cls_id)
-        if not c:
-            return (gr.update(value=0.7), gr.update(value=0.95), gr.update(value=40),
-                    gr.update(value=1024), gr.update(value="simples"),
-                    gr.update(value="detalhadas"), gr.update(value=""), "⚠️ Sala não encontrada.")
-        cfg = (c.get("theme_config") or {})
-        adv = cfg.get("adv") or {}
-        script = cfg.get("script") or {}
-        return (
-            gr.update(value=float(adv.get("temperature", 0.7))),
-            gr.update(value=float(adv.get("top_p", 0.95))),
-            gr.update(value=int(adv.get("top_k", 40))),
-            gr.update(value=int(adv.get("max_tokens", 1024))),
-            gr.update(value=script.get("estilo", "simples")),
-            gr.update(value=script.get("detalhamento", "detalhadas")),
-            gr.update(value=script.get("extras", "")),
-            "✅ Parâmetros carregados."
-        )
-
-    def teacher_save_params(
-        cls_id,
-        temp,
-        top_p,
-        top_k,
-        max_t,
-        estilo,
-        detalhamento,
-        extras,
-        classrooms,
-        subjects,
-        auth,
-    ):
-        me = _teacher_username(auth)
-        c = _get_class_by_id(classrooms, cls_id)
-        if not c:
-            return classrooms, subjects, "⚠️ Sala não encontrada."
-        teachers = [t.strip().lower() for t in c["members"]["teachers"]]
-        if me not in teachers and not _is_admin(auth):
-            return classrooms, subjects, "⛔ Você não é professor desta sala."
-
-        cfg = {
-            "adv": {
-                "temperature": float(temp),
-                "top_p": float(top_p),
-                "top_k": int(top_k),
-                "max_tokens": int(max_t),
-            },
-            "script": {
-                "estilo": (estilo or "simples"),
-                "detalhamento": (detalhamento or "detalhadas"),
-                "extras": (extras or "").strip(),
-            },
-        }
-
-        try:
-            set_classroom_theme_config(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                theme_config=cfg,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para salvar parâmetros da sala.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao salvar parâmetros: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        msg = notice or "✅ Parâmetros salvos para a sala."
-        return classes, subjects_map, msg
-
-    def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
-        me = _teacher_username(auth)
-        uname_norm = _normalize_username(uname)
-        if not cls_id or not uname_norm:
-            return classrooms, subjects, "⚠️ Informe sala e username."
-        if not me and not _is_admin(auth):
-            return classrooms, subjects, "⚠️ Faça login."
-
-        classroom = _get_class_by_id(classrooms, cls_id)
-        if not classroom:
-            return classrooms, subjects, "⚠️ Sala não encontrada."
-
-        normalized = [_normalize_username(t) for t in classroom["members"]["teachers"]]
-        if me not in normalized and not _is_admin(auth):
-            return classrooms, subjects, "⛔ Você não é professor desta sala."
-
-        owner = _normalize_username(classroom.get("owner"))
-        if owner and me != owner and not _is_admin(auth):
-            return (
-                classrooms,
-                subjects,
-                "⛔ Apenas o professor responsável por esta sala pode adicionar outros professores.",
-            )
-
-        try:
-            record = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname_norm,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
-
-        if not record or not record.id:
-            return classrooms, subjects, "⚠️ Usuário não encontrado."
-
-        role_label = None
-        if not owner and me:
-            role_label = "owner"
-
-        try:
-            upsert_classroom_teacher(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                teacher_id=record.id,
-                role_label=role_label,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao adicionar professor: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(
-            _render_teacher_members_md(cls_id, classes), notice or "✅ Professor adicionado."
-        )
-        return classes, subjects_map, md
-
-    def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
-        name = (name or "").strip()
-        theme = (theme or "").strip() or name
-        me = _teacher_username(auth)
-        role = _user_role(auth)
-
-        if role not in ("professor", "admin"):
-            md, dd = _teacher_classrooms_outputs(
-                auth, classrooms, "⛔ Apenas professores ou admins podem criar salas."
-            )
-            return classrooms, subjects, md, dd, dd, "⛔ Apenas professores ou admins podem criar salas."
-        if not me and not _is_admin(auth):
-            md, dd = _teacher_classrooms_outputs(
-                auth, classrooms, "⚠️ Faça login."
-            )
-            return classrooms, subjects, md, dd, dd, "⚠️ Faça login."
-        if not name:
-            md, dd = _teacher_classrooms_outputs(
-                auth, classrooms, "⚠️ Informe um nome para a sala."
-            )
-            return classrooms, subjects, md, dd, dd, "⚠️ Informe um nome para a sala."
-
-        creator_id = _auth_user_id(auth)
-        if not creator_id and not _is_admin(auth):
-            md, dd = _teacher_classrooms_outputs(
-                auth, classrooms, "⚠️ Não foi possível identificar o usuário logado."
-            )
-            return classrooms, subjects, md, dd, dd, "⚠️ Não foi possível identificar o usuário logado."
-
-        description = (desc or "").strip() or ""
-        try:
-            created = create_classroom_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                name=name,
-                description=description,
-                theme_name=theme,
-                theme_locked=bool(locked),
-                created_by=creator_id or "",
-            )
-        except SupabaseConfigurationError:
-            md, dd = _teacher_classrooms_outputs(
-                auth, classrooms,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
-            )
-            return classrooms, subjects, md, dd, dd, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas."
-        except SupabaseOperationError as err:
-            md, dd = _teacher_classrooms_outputs(
-                auth, classrooms, f"❌ Erro ao criar sala: {err}"
-            )
-            return classrooms, subjects, md, dd, dd, f"❌ Erro ao criar sala: {err}"
-
-        classroom_id = (created or {}).get("id")
-        if _is_teacher(auth) and me and creator_id and classroom_id:
-            try:
-                upsert_classroom_teacher(
-                    SUPABASE_URL,
-                    SUPABASE_SERVICE_ROLE_KEY,
-                    classroom_id=classroom_id,
-                    teacher_id=creator_id,
-                    role_label="owner",
-                )
-            except SupabaseConfigurationError:
-                pass
-            except SupabaseOperationError as err:
-                print(f"[SUPABASE] Falha ao definir professor responsável: {err}")
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md, dd = _teacher_classrooms_outputs(auth, classes, notice)
-        message = notice or "✅ Sala criada."
-        return classes, subjects_map, md, dd, dd, message
-
-    def teacher_refresh(auth, classrooms, subjects):
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md, dd = _teacher_classrooms_outputs(auth, classes, notice)
-        return classes, subjects_map, md, dd
-
-    def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
-        me = _teacher_username(auth)
-        uname_norm = _normalize_username(uname)
-        if not cls_id or not uname_norm:
-            return classrooms, subjects, "⚠️ Informe sala e username."
-
-        classroom = _get_class_by_id(classrooms, cls_id)
-        if not classroom:
-            return classrooms, subjects, "⚠️ Sala não encontrada."
-
-        teachers = [t.strip().lower() for t in classroom["members"]["teachers"]]
-        if me not in teachers and not _is_admin(auth):
-            return classrooms, subjects, "⛔ Você não é professor desta sala."
-
-        try:
-            record = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname_norm,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
-
-        if not record or not record.id:
-            return classrooms, subjects, "⚠️ Usuário não encontrado."
-
-        try:
-            upsert_classroom_student(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                student_id=record.id,
-                status="active",
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao adicionar aluno: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(
-            _render_teacher_members_md(cls_id, classes), notice or "✅ Aluno adicionado."
-        )
-        return classes, subjects_map, md
-
-    def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
-        me = _teacher_username(auth)
-        uname_norm = _normalize_username(uname)
-        if not cls_id or not uname_norm:
-            return classrooms, subjects, "⚠️ Informe sala e username."
-
-        classroom = _get_class_by_id(classrooms, cls_id)
-        if not classroom:
-            return classrooms, subjects, "⚠️ Sala não encontrada."
-
-        teachers = [t.strip().lower() for t in classroom["members"]["teachers"]]
-        if me not in teachers and not _is_admin(auth):
-            return classrooms, subjects, "⛔ Você não é professor desta sala."
-
-        try:
-            record = fetch_user_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                SUPABASE_USERS_TABLE,
-                uname_norm,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
-
-        if not record or not record.id:
-            return classrooms, subjects, "⚠️ Usuário não encontrado."
-
-        try:
-            remove_classroom_student(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                student_id=record.id,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects, f"❌ Erro ao remover aluno: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-        md = _merge_notice(
-            _render_teacher_members_md(cls_id, classes), notice or "✅ Aluno removido."
-        )
-        return classes, subjects_map, md
-
-    def teacher_subjects_refresh(auth, classrooms, selected_id, subjects_by_class):
-        return _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class)
-
-    def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
-        me = _teacher_username(auth)
-        if not selected_id:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala."
-        classroom = _get_class_by_id(classrooms, selected_id)
-        if not classroom:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Sala não encontrada."
-        if me not in [t.strip().lower() for t in classroom["members"]["teachers"]] and not _is_admin(auth):
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⛔ Você não é professor desta sala."
-        subj_name = (subj or "").strip()
-        if not subj_name:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Informe o nome do subtema."
-        current = list(subjects_by_class.get(selected_id, []))
-        if any(s.get("name", "").lower() == subj_name.lower() for s in current):
-            return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Esse subtema já existe."
-
-        creator_id = _auth_user_id(auth) or ""
-        try:
-            create_subject_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=selected_id,
-                name=subj_name,
-                created_by=creator_id,
-            )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects_by_class,
-                gr.update(),
-                gr.update(),
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects_by_class, gr.update(), gr.update(), f"❌ Erro ao adicionar subtema: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        dd, chk, md = _subjects_choices_teacher(auth, classes, selected_id, subjects_map)
-        md = _merge_notice(md, notice or "✅ Subtema adicionado.")
-        return classes, subjects_map, dd, chk, md
-
-    def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classrooms):
-        if not selected_id:
-            return classrooms, subjects_by_class, "ℹ️ Selecione uma sala."
-        classroom = _get_class_by_id(classrooms, selected_id)
-        if not classroom:
-            return classrooms, subjects_by_class, "⚠️ Sala não encontrada."
-        me = _teacher_username(auth)
-        if me not in [t.strip().lower() for t in classroom["members"]["teachers"]] and not _is_admin(auth):
-            return classrooms, subjects_by_class, "⛔ Você não é professor desta sala."
-
-        current = list(subjects_by_class.get(selected_id, []))
-        actives_set = set(actives or [])
-
-        try:
-            for subject in current:
-                subject_id = subject.get("id")
-                if not subject_id:
-                    continue
-                desired_active = subject.get("name") in actives_set
-                update_subject_active(
-                    SUPABASE_URL,
-                    SUPABASE_SERVICE_ROLE_KEY,
-                    subject_id=subject_id,
-                    is_active=desired_active,
-                )
-        except SupabaseConfigurationError:
-            return (
-                classrooms,
-                subjects_by_class,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
-            )
-        except SupabaseOperationError as err:
-            return classrooms, subjects_by_class, f"❌ Erro ao atualizar subtemas: {err}"
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        md = _merge_notice(
-            _render_subjects_md(subjects_map, selected_id, classes or []),
-            notice or "✅ Subtemas atualizados.",
-        )
-        return classes, subjects_map, md
-
     # Encadeamentos do Professor
     btnTeacherAddTeacher.click(
         teacher_add_teacher,
@@ -2069,11 +2308,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
         outputs=[classroomsState, subjectsState, tClassroomsMd, tSelectClass],
     )
 
-    def _teacher_on_select(auth, classrooms, selected_id, subjects_by_class):
-        md_members = _render_teacher_members_md(selected_id, classrooms)
-        dd, chk, md_subjects = _subjects_choices_teacher(
-            auth, classrooms, selected_id, subjects_by_class)
-        return md_members, dd, chk, md_subjects
     tSelectClass.change(_teacher_on_select, inputs=[authState, classroomsState, tSelectClass, subjectsState],
                         outputs=[tMembersMd, tSelectClass, tActiveList, tSubjectsMd])
 
@@ -2099,168 +2333,13 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     )
 
     # ======== Admin: Subtemas (na página de salas) ========
-    def _admin_subjects_ui(classrooms, subjects_by_class, selected_id, notice=""):
-        chk = gr.update(choices=[], value=[])
-        md = _render_subjects_md(subjects_by_class, selected_id, classrooms or [])
-        if selected_id:
-            lst = list(subjects_by_class.get(selected_id, []))
-            names = [s.get("name") for s in lst]
-            active = [s.get("name") for s in lst if s.get("active")]
-            chk = gr.update(choices=names, value=active)
-        md = _merge_notice(md, notice)
-        return chk, md
-
-    def admin_refresh_subjects(classrooms, subjects_by_class, selected_id):
-        return _admin_subjects_ui(classrooms, subjects_by_class, selected_id)
-
-    def admin_add_subject(cls_id, subj, subjects_by_class, classrooms, auth):
-        if not cls_id:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                None,
-                "ℹ️ Selecione uma sala para adicionar subtemas.",
-            )
-            return classrooms, subjects_by_class, chk, md
-
-        subj_name = (subj or "").strip()
-        if not subj_name:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                cls_id,
-                "⚠️ Informe o nome do subtema.",
-            )
-            return classrooms, subjects_by_class, chk, md
-
-        existing = list(subjects_by_class.get(cls_id, []))
-        if any(s.get("name", "").lower() == subj_name.lower() for s in existing):
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                cls_id,
-                "⚠️ Esse subtema já existe.",
-            )
-            return classrooms, subjects_by_class, chk, md
-
-        creator_id = _auth_user_id(auth) or ""
-        try:
-            create_subject_record(
-                SUPABASE_URL,
-                SUPABASE_SERVICE_ROLE_KEY,
-                classroom_id=cls_id,
-                name=subj_name,
-                created_by=creator_id,
-            )
-        except SupabaseConfigurationError:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                cls_id,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
-            )
-            return classrooms, subjects_by_class, chk, md
-        except SupabaseOperationError as err:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                cls_id,
-                f"❌ Erro ao adicionar subtema: {err}",
-            )
-            return classrooms, subjects_by_class, chk, md
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        chk, md = _admin_subjects_ui(
-            classes,
-            subjects_map,
-            cls_id,
-            notice or "✅ Subtema adicionado.",
-        )
-        return classes, subjects_map, chk, md
-
-    def admin_apply_active(cls_id, actives, subjects_by_class, classrooms):
-        if not cls_id:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                None,
-                "⚠️ Selecione uma sala.",
-            )
-            return classrooms, subjects_by_class, chk, md
-
-        lst = list(subjects_by_class.get(cls_id, []))
-        names = set(actives or [])
-        try:
-            for entry in lst:
-                subject_id = entry.get("id")
-                if not subject_id:
-                    continue
-                update_subject_active(
-                    SUPABASE_URL,
-                    SUPABASE_SERVICE_ROLE_KEY,
-                    subject_id=subject_id,
-                    is_active=entry.get("name") in names,
-                )
-        except SupabaseConfigurationError:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                cls_id,
-                "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
-            )
-            return classrooms, subjects_by_class, chk, md
-        except SupabaseOperationError as err:
-            chk, md = _admin_subjects_ui(
-                classrooms,
-                subjects_by_class,
-                cls_id,
-                f"❌ Erro ao atualizar subtemas: {err}",
-            )
-            return classrooms, subjects_by_class, chk, md
-
-        classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
-        chk, md = _admin_subjects_ui(
-            classes,
-            subjects_map,
-            cls_id,
-            notice or "✅ Subtemas atualizados.",
-        )
-        return classes, subjects_map, chk, md
     # ======== PÁGINA: Histórico ========
-    def refresh_history(chats_map, mine_only, auth):
-        user = (auth or {}).get("username")
-        return _render_history_md(chats_map, owner=user if mine_only else None)
     btnHistoryRefresh.click(refresh_history, inputs=[
                             chatsState, histMineOnly, authState], outputs=[historyMd])
     histBack.click(lambda: _go_admin("home"),
                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== PÁGINA: Avaliação (com handlers tolerantes) ========
-    def eval_refresh_dropdown(chats_map):
-        ids = []
-        for cid, chat in (chats_map or {}).items():
-            if any(m for m in chat["messages"] if m["role"] == "user"):
-                ids.append((chat.get("title") or cid, cid))
-        default_val = ids[0][1] if ids else None
-        return gr.update(choices=ids, value=default_val)
-
-    def eval_load(chat_id, chats_map=None):
-        print(
-            f"[EVAL] eval_load: chat_id={chat_id!r} has_map={bool(chats_map)}")
-        if not chat_id:
-            return "ℹ️ Selecione um chat para visualizar/avaliar."
-        chat = (chats_map or {}).get(chat_id)
-        return _render_eval_md(chat)
-
-    def eval_save(chat_id, score, rubric, feedback, chats_map):
-        if not chat_id or chat_id not in (chats_map or {}):
-            return chats_map, "⚠️ Selecione um chat válido."
-        cm = chats_map[chat_id]
-        cm["score"] = int(score) if score is not None else None
-        cm["rubric"] = (rubric or "").strip() or None
-        cm["feedback"] = (feedback or "").strip() or None
-        return chats_map, "✅ Avaliação salva."
-
     btnEvalRefresh.click(eval_refresh_dropdown, inputs=[
                          chatsState], outputs=[evalChatId])
     evalChatId.change(eval_load, inputs=[
@@ -2271,9 +2350,6 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                    outputs=[adminNavState, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg])
 
     # ======== PÁGINA: Progresso ========
-    def refresh_progress(chats_map, mine_only, auth):
-        user = (auth or {}).get("username")
-        return _render_progress_md(chats_map, user_filter=user if mine_only else None)
     btnProgRefresh.click(refresh_progress, inputs=[
                          chatsState, progMineOnly, authState], outputs=[progressMd])
     progBack.click(lambda: _go_admin("home"),
@@ -2338,75 +2414,19 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     ])
 
     # ======== ALUNO: Ações / Encadeamentos ========
-    def student_rooms_refresh(auth, classrooms):
-        my = _student_classes(auth, classrooms or [])
-        choices = [(c["name"], c["id"]) for c in my]
-        default = choices[0][1] if choices else None
-        # subjectsState.value só existe em runtime; protegemos com hasattr
-        subs_map = subjectsState.value if hasattr(
-            subjectsState, "value") else {}
-        info = _render_class_details(
-            default, classrooms, subs_map) if default else "⚠️ Você ainda não está em nenhuma sala."
-        return gr.update(choices=choices, value=default), info, default
-
-    def student_on_select(cid, classrooms, subjects_by_class):
-        return _render_class_details(cid, classrooms, subjects_by_class), cid
-
-    def student_go_rooms():
-        return gr.update(visible=False), gr.update(visible=True)
-
-    def student_rooms_back():
-        return gr.update(visible=True), gr.update(visible=False)
-
-    def student_go_setup(auth, cid, classrooms, subjects_by_class):
-        c = next((x for x in (classrooms or []) if x["id"] == cid), None)
-        if not c:
-            return gr.update(visible=True), gr.update(visible=False), gr.update(value=""), gr.update(choices=[])
-        theme = c.get("theme_name") or c["name"]
-        subs = _student_subtheme_choices(cid, subjects_by_class or {})
-        return gr.update(visible=False), gr.update(visible=True), gr.update(value=theme), gr.update(choices=subs, value=subs)
-
-    def _build_extras_from_classroom(theme, subthemes, interesses):
-        # Preferimos manter "extras" enxuto; os subtemas e interesses também vão como variáveis para o builder
-        subs_txt = ", ".join(subthemes or [])
-        intr_txt = (interesses or "").strip()
-        parts = []
-        if subs_txt:
-            parts.append(f"Priorize os subtemas: {subs_txt}.")
-        if intr_txt:
-            parts.append(
-                f"Correlacione com temas de interesse do aluno: {intr_txt}.")
-        parts.append("Adote o tom motivador e pedagógico.")
-        return " ".join(parts)
-
-    def student_apply_setup(cid, theme, estilo, detalhamento, objetivo, interesses, subthemes, scriptState):
-        # Monta extras (texto) e chama builder com variáveis estruturadas
-        extras = _build_extras_from_classroom(theme, subthemes, interesses)
-        new_script = buildCustomScript(
-            theme, estilo, detalhamento, objetivo, extras,
-            subtemas=subthemes, interesses=interesses
-        )
-        return new_script, gr.update(visible=False), gr.update(visible=True)
-
-    def _student_chat_back_to_setup():
-        return gr.update(visible=True), gr.update(visible=False)
-
-    def _student_chat_enable():
-        return gr.update(interactive=True)
-
     # Home (Aluno) → Minhas Salas
     stEnterRoomChatSetup.click(
         student_setup_from_class,
-        inputs=[stRoomSelect, classroomsState, subjectsState],
+        inputs=[stRoomSelect, classroomsState, subjectsState, advState],
         outputs=[stAssunto, stSubthemes, stEstilo, stDetalhamento,
                  stObjetivo, stInteresses, stCfgCol, stChatCol, advState, stProvider]
     )
 
     btnStudentRooms.click(student_go_rooms, outputs=[viewHome, viewStudentRooms]).then(
-        student_rooms_refresh, inputs=[authState, classroomsState],
+        student_rooms_refresh, inputs=[authState, classroomsState, subjectsState],
         outputs=[stRoomSelect, stRoomInfo, studentSelectedClass]
     )
-    stRoomsRefresh.click(student_rooms_refresh, inputs=[authState, classroomsState],
+    stRoomsRefresh.click(student_rooms_refresh, inputs=[authState, classroomsState, subjectsState],
                          outputs=[stRoomSelect, stRoomInfo, studentSelectedClass])
     stRoomSelect.change(student_on_select, inputs=[stRoomSelect, classroomsState, subjectsState],
                         outputs=[stRoomInfo, studentSelectedClass])
