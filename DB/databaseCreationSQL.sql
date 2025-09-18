@@ -10,10 +10,6 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'role_type') THEN
     CREATE TYPE role_type AS ENUM ('student','teacher','admin');
   END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'topic_source_type') THEN
-    CREATE TYPE topic_source_type AS ENUM ('predefined','adhoc');
-  END IF;
 END
 $$;
 
@@ -84,23 +80,12 @@ CREATE TABLE IF NOT EXISTS public.chats (
   classroom_id      uuid NOT NULL REFERENCES public.classrooms(id)  ON DELETE CASCADE,
   subject_id        uuid REFERENCES public.classroom_subjects(id)    ON DELETE SET NULL,
   subject_free_text text,
-  topic_source      topic_source_type NOT NULL,
+  topic_source      text NOT NULL,
   content           jsonb,     -- histórico resumido/trechos/refs
   summary           text,
   started_at        timestamptz NOT NULL DEFAULT now(),
   ended_at          timestamptz
 );
-
--- Regras de coerência de assunto (se quiser garantir coerência básica):
--- Se topic_source='predefined' => subject_id deve existir
--- Se topic_source='adhoc'      => subject_free_text deve existir
-ALTER TABLE public.chats
-  ADD CONSTRAINT chk_chats_topic_coherence
-  CHECK (
-    (topic_source = 'predefined' AND subject_id IS NOT NULL AND (subject_free_text IS NULL OR length(trim(subject_free_text)) = 0))
-    OR
-    (topic_source = 'adhoc'      AND subject_id IS NULL     AND subject_free_text IS NOT NULL AND length(trim(subject_free_text)) > 0)
-  );
 
 -- Avaliações de chat (por professor)
 CREATE TABLE IF NOT EXISTS public.chat_evaluations (
@@ -130,20 +115,11 @@ CREATE TABLE IF NOT EXISTS public.progress_scores (
   classroom_id      uuid NOT NULL REFERENCES public.classrooms(id)  ON DELETE CASCADE,
   subject_id        uuid REFERENCES public.classroom_subjects(id)    ON DELETE SET NULL,
   subject_free_text text,
-  topic_source      topic_source_type NOT NULL,
+  topic_source      text NOT NULL,
   metric            text NOT NULL,           -- ex.: 'overall','logica','ponteiros','poo'
   score             numeric(5,2) NOT NULL,   -- 0..100 (ajuste a escala)
   recorded_at       timestamptz NOT NULL DEFAULT now()
 );
-
--- Mesma coerência de assunto dos chats
-ALTER TABLE public.progress_scores
-  ADD CONSTRAINT chk_progress_topic_coherence
-  CHECK (
-    (topic_source = 'predefined' AND subject_id IS NOT NULL AND (subject_free_text IS NULL OR length(trim(subject_free_text)) = 0))
-    OR
-    (topic_source = 'adhoc'      AND subject_id IS NULL     AND subject_free_text IS NOT NULL AND length(trim(subject_free_text)) > 0)
-  );
 
 -- Preferências do aluno (opcional)
 CREATE TABLE IF NOT EXISTS public.student_subject_preferences (
@@ -234,6 +210,5 @@ COMMENT ON COLUMN public.users.role IS 'student | teacher | admin';
 
 COMMENT ON COLUMN public.classrooms.theme_locked IS 'Quando true, o tema não pode mais ser alterado.';
 
-COMMENT ON TYPE topic_source_type IS 'Origem do tópico: predefined (FK para classroom_subjects) ou adhoc (texto livre).';
-COMMENT ON COLUMN public.chats.topic_source IS 'Define se o assunto veio da lista pré-definida ou foi ad-hoc.';
-COMMENT ON COLUMN public.progress_scores.topic_source IS 'Define se o assunto veio da lista pré-definida ou foi ad-hoc.';
+COMMENT ON COLUMN public.chats.topic_source IS 'Tema associado ao chat (nome da sala ou texto informado pelo aluno).';
+COMMENT ON COLUMN public.progress_scores.topic_source IS 'Tema associado ao registro de progresso (sala ou texto livre).';

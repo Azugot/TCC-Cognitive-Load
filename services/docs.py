@@ -19,8 +19,12 @@ def extractPdfText(filePath: str) -> str:
 
 
 def createChatPdf(history, docsState):
+    # use um diretório local válido
+    outDir = "./output_pdfs"
+    os.makedirs(outDir, exist_ok=True)  # garante que a pasta exista
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outPath = f"/mnt/data/chat_{timestamp}.pdf"
+    outPath = os.path.join(outDir, f"chat_{timestamp}.pdf")
 
     doc = SimpleDocTemplate(outPath, pagesize=letter, leftMargin=36,
                             rightMargin=36, topMargin=36, bottomMargin=36)

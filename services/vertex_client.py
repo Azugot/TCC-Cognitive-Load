@@ -1,6 +1,7 @@
 # services/vertex_client.py
 import os
 import json
+import re
 
 try:
     import vertexai as _vertexai
@@ -117,3 +118,89 @@ def _streamFromVertex(messages, cfg, adv):
             text = getattr(chunk, "text", None)
             if text:
                 yield text
+
+
+def _collect_response_text(response):
+    """Extract plain text from a non-streaming Vertex response."""
+
+    if response is None:
+        return ""
+
+    direct_text = getattr(response, "text", None)
+    if isinstance(direct_text, str) and direct_text.strip():
+        return direct_text
+
+    candidates = getattr(response, "candidates", None) or []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        if content is None:
+            continue
+        parts = getattr(content, "parts", None) or []
+        texts = [getattr(part, "text", None) for part in parts]
+        combined = " ".join(t for t in texts if isinstance(t, str) and t.strip())
+        if combined.strip():
+            return combined
+
+    try:
+        serialized = str(response)
+    except Exception:  # pragma: no cover - fallback defensivo
+        serialized = ""
+    return serialized
+
+
+def _limit_phrases(text: str, max_phrases: int = 2) -> str:
+    """Reduce the generated summary to the requested number of phrases."""
+
+    if not text:
+        return ""
+
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return ""
+
+    segments = re.findall(r"[^.!?\n]+[.!?]?", normalized)
+    phrases = []
+    for segment in segments:
+        cleaned = segment.strip(" -•;:\u2022")
+        if not cleaned:
+            continue
+        phrases.append(cleaned)
+        if len(phrases) >= max_phrases:
+            break
+
+    if not phrases:
+        return normalized
+
+    result = " ".join(phrases[:max_phrases])
+    return result.strip()
+
+
+def summarize_chat_history(messages, cfg, *, max_phrases: int = 2) -> str:
+    """Summarize a chat transcript using Vertex in up to `max_phrases` phrases."""
+
+    history = messages or []
+    if not history:
+        return ""
+
+    transcript = _messagesToTranscript(history)
+    if not transcript.strip():
+        return ""
+
+    model = _vertex_init_or_raise(cfg)
+    prompt = (
+        "Resuma a conversa a seguir em até duas frases curtas. "
+        "Use linguagem objetiva, sem listas ou tópicos.\n\n"
+        "Conversa:\n"
+        f"{transcript}"
+    )
+
+    generation_config = {
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "max_output_tokens": 256,
+    }
+
+    response = model.generate_content(prompt, generation_config=generation_config)
+    summary = _collect_response_text(response)
+    limited = _limit_phrases(summary, max_phrases=max_phrases)
+    return limited
