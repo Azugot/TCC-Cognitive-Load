@@ -15,6 +15,7 @@ from .common import (
     _get_client,
     _handle_api_error,
     _normalize_chat_record,
+    enrich_chats_with_evaluations,
 )
 
 
@@ -257,7 +258,9 @@ def list_all_chats(
         _normalize_chat_record(row, classroom_map=classroom_map, user_map=user_map)
         for row in rows
     ]
-    return normalized
+    return enrich_chats_with_evaluations(
+        client, normalized, users_table=users_table
+    )
 
 
 def create_classroom_record(

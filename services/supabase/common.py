@@ -10,8 +10,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-import uuid
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
@@ -109,16 +108,23 @@ def _normalize_comment_entries(raw_comments: Any) -> List[Dict[str, Any]]:
         text_str = str(text).strip()
         if not text_str:
             continue
-        comments.append(
-            {
-                "id": entry.get("id"),
-                "author_id": entry.get("author_id"),
-                "author_login": entry.get("author_login"),
-                "author_name": entry.get("author_name"),
-                "created_at": entry.get("created_at"),
-                "text": text_str,
-            }
-        )
+        normalized: Dict[str, Any] = {
+            "id": entry.get("id"),
+            "author_id": entry.get("author_id"),
+            "author_login": entry.get("author_login"),
+            "author_name": entry.get("author_name"),
+            "created_at": entry.get("created_at"),
+            "text": text_str,
+        }
+        score_value = entry.get("score")
+        if score_value is None:
+            score_value = entry.get("overall_score")
+        try:
+            if score_value is not None:
+                normalized["score"] = float(score_value)
+        except (TypeError, ValueError):
+            pass
+        comments.append(normalized)
     comments.sort(key=lambda item: item.get("created_at") or "")
     return comments
 
@@ -400,10 +406,59 @@ def _fetch_users_map(
     return mapping
 
 
-def _load_chat_content(client: Client, chat_id: str) -> Dict[str, Any]:
+def _normalize_evaluation_row(
+    row: Dict[str, Any],
+    *,
+    user_map: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
+) -> Dict[str, Any]:
+    evaluator_id = row.get("evaluator_id")
+    info = (user_map or {}).get(evaluator_id, {})
+    comment_text = (row.get("comments") or "").strip()
+    try:
+        score_value = float(row.get("overall_score"))
+    except (TypeError, ValueError):
+        score_value = None
+
+    author_login = info.get("login") or _normalize_login(row.get("evaluator_login") or "")
+    author_name = (
+        info.get("display_name")
+        or row.get("evaluator_name")
+        or row.get("evaluator_login")
+        or author_login
+        or evaluator_id
+    )
+
+    entry: Dict[str, Any] = {
+        "id": row.get("id"),
+        "chat_id": row.get("chat_id"),
+        "author_id": evaluator_id,
+        "author_login": author_login,
+        "author_name": author_name,
+        "created_at": row.get("created_at"),
+        "text": comment_text,
+    }
+    if score_value is not None:
+        entry["score"] = score_value
+    return entry
+
+
+def fetch_chat_evaluations_for_ids(
+    client: Client,
+    chat_ids: Sequence[Optional[str]],
+    *,
+    users_table: str = "users",
+) -> Dict[str, List[Dict[str, Any]]]:
+    cleaned = [cid for cid in chat_ids if cid]
+    if not cleaned:
+        return {}
+
     try:
         response = (
-            client.table("chats").select("content").eq("id", chat_id).limit(1).execute()
+            client.table("chat_evaluations")
+            .select("id,chat_id,evaluator_id,overall_score,comments,created_at")
+            .in_("chat_id", cleaned)
+            .order("created_at")
+            .execute()
         )
     except APIError as err:
         raise _handle_api_error(err) from err
@@ -411,10 +466,102 @@ def _load_chat_content(client: Client, chat_id: str) -> Dict[str, Any]:
         raise SupabaseOperationError(str(exc)) from exc
 
     rows = response.data or []
-    if not rows:
-        raise SupabaseOperationError("Chat não encontrado no Supabase.")
+    user_ids: Set[Optional[str]] = {row.get("evaluator_id") for row in rows if row.get("evaluator_id")}
+    user_map = _fetch_users_map(client, user_ids, users_table=users_table) if user_ids else {}
 
-    return _ensure_dict(rows[0].get("content"))
+    evaluations: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        chat_id = row.get("chat_id")
+        if not chat_id:
+            continue
+        entry = _normalize_evaluation_row(row, user_map=user_map)
+        evaluations.setdefault(chat_id, []).append(entry)
+    return evaluations
+
+
+def fetch_latest_auto_evaluations(
+    client: Client,
+    chat_ids: Sequence[Optional[str]],
+) -> Dict[str, Dict[str, Any]]:
+    cleaned = [cid for cid in chat_ids if cid]
+    if not cleaned:
+        return {}
+
+    try:
+        response = (
+            client.table("automated_chat_evaluations")
+            .select("id,chat_id,bot_evaluations,created_at")
+            .in_("chat_id", cleaned)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    rows = response.data or []
+    results: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        chat_id = row.get("chat_id")
+        if not chat_id or chat_id in results:
+            continue
+        payload = _ensure_dict(row.get("bot_evaluations"))
+        text_value = payload.get("text") or payload.get("evaluation") or payload.get("content")
+        if isinstance(text_value, dict):
+            text_value = json.dumps(text_value, ensure_ascii=False)
+        text_str = str(text_value).strip() if text_value is not None else ""
+        score_value = payload.get("score") or payload.get("rating")
+        try:
+            score = float(score_value) if score_value is not None else None
+        except (TypeError, ValueError):
+            score = None
+        results[chat_id] = {
+            "id": row.get("id"),
+            "text": text_str,
+            "score": score,
+            "created_at": row.get("created_at"),
+            "raw": payload,
+        }
+    return results
+
+
+def enrich_chats_with_evaluations(
+    client: Client,
+    chats: List[Dict[str, Any]],
+    *,
+    users_table: str = "users",
+) -> List[Dict[str, Any]]:
+    if not chats:
+        return chats
+
+    chat_ids = [chat.get("id") for chat in chats if chat.get("id")]
+    manual_map = fetch_chat_evaluations_for_ids(
+        client, chat_ids, users_table=users_table
+    )
+    auto_map = fetch_latest_auto_evaluations(client, chat_ids)
+
+    for chat in chats:
+        chat_id = chat.get("id")
+        existing_comments = _normalize_comment_entries(chat.get("teacher_comments"))
+        db_comments = manual_map.get(chat_id, [])
+        combined: List[Dict[str, Any]] = []
+        if db_comments:
+            combined.extend(db_comments)
+        if existing_comments:
+            combined.extend(existing_comments)
+        if combined:
+            combined.sort(key=lambda item: item.get("created_at") or "")
+            chat["teacher_comments"] = combined
+        else:
+            chat["teacher_comments"] = []
+
+        auto_entry = auto_map.get(chat_id)
+        if auto_entry:
+            chat["auto_evaluation"] = auto_entry.get("text") or chat.get("auto_evaluation")
+            chat["auto_evaluation_score"] = auto_entry.get("score")
+            chat["auto_evaluation_updated_at"] = auto_entry.get("created_at")
+    return chats
 
 
 def add_chat_comment(
@@ -426,68 +573,97 @@ def add_chat_comment(
     author_login: Optional[str],
     author_name: Optional[str],
     text: str,
+    score: Any,
 ) -> Dict[str, Any]:
-    """Append a teacher/admin comment to the chat content JSON."""
+    """Persist a manual evaluation/comment in ``chat_evaluations``."""
 
     normalized_text = (text or "").strip()
     if not normalized_text:
         raise SupabaseOperationError("Informe um comentário válido.")
-
-    client = _get_client(url, key)
-    content = _load_chat_content(client, chat_id)
-
-    comments = list(content.get("teacher_comments") or [])
-    sanitized = _normalize_comment_entries(comments)
-
-    entry = {
-        "id": str(uuid.uuid4()),
-        "author_id": author_id,
-        "author_login": _normalize_login(author_login or ""),
-        "author_name": author_name or author_login or author_id,
-        "text": normalized_text,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    sanitized.append(entry)
-    content["teacher_comments"] = sanitized
+    if not chat_id:
+        raise SupabaseOperationError("Identificador do chat ausente para registrar comentário.")
+    if not author_id:
+        raise SupabaseOperationError("Identificador do avaliador ausente para registrar comentário.")
 
     try:
-        client.table("chats").update({"content": content}).eq("id", chat_id).execute()
+        numeric_score = float(score)
+    except (TypeError, ValueError):
+        raise SupabaseOperationError("Informe uma nota numérica válida para o comentário.")
+
+    client = _get_client(url, key)
+    payload = {
+        "chat_id": chat_id,
+        "evaluator_id": author_id,
+        "overall_score": numeric_score,
+        "comments": normalized_text,
+    }
+
+    try:
+        response = client.table("chat_evaluations").insert(payload).execute()
     except APIError as err:
         raise _handle_api_error(err) from err
     except Exception as exc:
         raise SupabaseOperationError(str(exc)) from exc
 
+    row = response.data[0] if response.data else payload
+    user_map = _fetch_users_map(client, {author_id}) if author_id else {}
+    entry = _normalize_evaluation_row(row, user_map=user_map)
+    if not entry.get("author_name"):
+        entry["author_name"] = author_name or author_login or author_id
+    if not entry.get("author_login"):
+        entry["author_login"] = _normalize_login(author_login or "")
+    if entry.get("text") is None:
+        entry["text"] = normalized_text
+    if entry.get("score") is None:
+        entry["score"] = numeric_score
     return entry
 
 
-def set_chat_auto_evaluation(
+def record_auto_chat_evaluation(
     url: str,
     key: str,
     *,
     chat_id: str,
     evaluation_text: str,
-) -> str:
-    """Persist the generated evaluation text inside the chat content."""
+    evaluation_score: Optional[float] = None,
+    extra_payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Store an automated evaluation snapshot for a chat."""
 
     client = _get_client(url, key)
-    content = _load_chat_content(client, chat_id)
+    payload = dict(extra_payload or {})
+    payload.setdefault("text", (evaluation_text or "").strip())
+    if evaluation_score is not None:
+        try:
+            payload["score"] = float(evaluation_score)
+        except (TypeError, ValueError):
+            pass
 
-    normalized_text = (evaluation_text or "").strip()
-    if normalized_text:
-        content["auto_evaluation"] = normalized_text
-        content["auto_evaluation_updated_at"] = datetime.now(timezone.utc).isoformat()
-    else:
-        content.pop("auto_evaluation", None)
-        content.pop("auto_evaluation_updated_at", None)
+    record = {"chat_id": chat_id, "bot_evaluations": payload}
 
     try:
-        client.table("chats").update({"content": content}).eq("id", chat_id).execute()
+        response = client.table("automated_chat_evaluations").insert(record).execute()
     except APIError as err:
         raise _handle_api_error(err) from err
     except Exception as exc:
         raise SupabaseOperationError(str(exc)) from exc
 
-    return content.get("auto_evaluation") or ""
+    row = response.data[0] if response.data else record
+    stored_payload = _ensure_dict(row.get("bot_evaluations")) or payload
+    text_value = stored_payload.get("text") or ""
+    try:
+        score_value = float(stored_payload.get("score")) if stored_payload.get("score") is not None else None
+    except (TypeError, ValueError):
+        score_value = None
+
+    return {
+        "id": row.get("id"),
+        "chat_id": chat_id,
+        "text": str(text_value).strip(),
+        "score": score_value,
+        "created_at": row.get("created_at"),
+        "raw": stored_payload,
+    }
 
 
 def reset_cached_client() -> None:
@@ -511,7 +687,10 @@ __all__ = [
     "_normalize_timestamp",
     "_normalize_chat_record",
     "add_chat_comment",
-    "set_chat_auto_evaluation",
+    "fetch_chat_evaluations_for_ids",
+    "fetch_latest_auto_evaluations",
+    "enrich_chats_with_evaluations",
+    "record_auto_chat_evaluation",
     "fetch_user_record",
     "create_user_record",
     "fetch_users_by_role",

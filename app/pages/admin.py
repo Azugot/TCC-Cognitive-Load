@@ -45,7 +45,6 @@ from app.pages.history_shared import (
     generate_auto_evaluation,
     load_chat_entry,
     prepare_download,
-    store_manual_rating,
 )
 
 
@@ -113,7 +112,7 @@ def admin_history_dropdown(classrooms, current_value=None):
     return _admin_history_dropdown(classrooms, current_value)
 
 
-def admin_history_refresh(auth, classroom_filter, _manual_ratings):
+def admin_history_refresh(auth, classroom_filter):
     if not _is_admin(auth):
         return (
             gr.update(value=[]),
@@ -176,7 +175,7 @@ def admin_history_refresh(auth, classroom_filter, _manual_ratings):
     )
 
 
-def admin_history_load_chat(chat_id, history_entries, manual_ratings, current_download_path):
+def admin_history_load_chat(chat_id, history_entries, current_download_path):
     result = load_chat_entry(chat_id, history_entries, current_download_path)
 
     if result.notice:
@@ -185,8 +184,7 @@ def admin_history_load_chat(chat_id, history_entries, manual_ratings, current_do
         else:
             gr.Warning(result.notice)
 
-    manual_map = manual_ratings or {}
-    manual_value = manual_map.get(result.chat_id, 0) if result.chat_id else 0
+    manual_value = 0
 
     return (
         result.chat_id,
@@ -199,7 +197,6 @@ def admin_history_load_chat(chat_id, history_entries, manual_ratings, current_do
         result.download_path,
         gr.update(visible=result.download_visible),
         gr.update(value=""),
-        gr.update(value=""),
     )
 
 
@@ -211,10 +208,11 @@ def admin_history_generate_evaluation(chat_id, transcript, history_entries):
     return gr.update(value=evaluation), entries, metadata_update, notice
 
 
-def admin_history_add_comment(chat_id, comment_text, history_entries, auth):
+def admin_history_add_comment(chat_id, rating, comment_text, history_entries, auth):
     login = _teacher_username(auth) or _normalize_username((auth or {}).get("username"))
     updated, comments_md, notice = append_chat_comment(
         chat_id,
+        rating,
         comment_text,
         history_entries,
         author_id=_auth_user_id(auth),
@@ -226,10 +224,6 @@ def admin_history_add_comment(chat_id, comment_text, history_entries, auth):
         return updated, gr.update(value=comment_text), gr.update(), notice
 
     return updated, gr.update(value=""), gr.update(value=comments_md), notice
-
-
-def admin_history_store_manual_rating(chat_id, rating, manual_state):
-    return store_manual_rating(chat_id, rating, manual_state)
 
 
 def admin_history_prepare_download(download_path):
@@ -854,7 +848,6 @@ def build_admin_views(
     admin_history_state = gr.State([])
     admin_history_selected = gr.State(None)
     admin_history_transcript = gr.State("")
-    admin_manual_ratings = gr.State({})
     admin_download_path = gr.State(None)
 
     with gr.Column(visible=False) as viewHomeAdmin:
@@ -965,9 +958,8 @@ def build_admin_views(
         adHistoryEvaluation = gr.Textbox(
             label="Avaliação automática (Vertex)", lines=6, interactive=False, value=""
         )
-        with gr.Row():
-            adManualRating = gr.Slider(0, 100, value=0, step=1, label="Avaliação manual (0-100)")
-            adManualRatingMsg = gr.Markdown("")
+        adManualRating = gr.Slider(0, 100, value=0, step=1, label="Avaliação manual (0-100)")
+        gr.Markdown("A nota selecionada será registrada junto ao comentário enviado.")
         adHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
         adCommentInput = gr.Textbox(
             label="Novo comentário",
@@ -1140,7 +1132,7 @@ def build_admin_views(
 
     adHistoryRefresh.click(
         admin_history_refresh,
-        inputs=[auth_state, adHistoryClass, admin_manual_ratings],
+        inputs=[auth_state, adHistoryClass],
         outputs=[
             adHistoryTable,
             admin_history_state,
@@ -1150,12 +1142,7 @@ def build_admin_views(
         ],
     ).then(
         admin_history_load_chat,
-        inputs=[
-            admin_history_selected,
-            admin_history_state,
-            admin_manual_ratings,
-            admin_download_path,
-        ],
+        inputs=[admin_history_selected, admin_history_state, admin_download_path],
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
@@ -1167,13 +1154,12 @@ def build_admin_views(
             admin_download_path,
             adHistoryDownload,
             adCommentInput,
-            adManualRatingMsg,
         ],
     )
 
     adHistoryClass.change(
         admin_history_refresh,
-        inputs=[auth_state, adHistoryClass, admin_manual_ratings],
+        inputs=[auth_state, adHistoryClass],
         outputs=[
             adHistoryTable,
             admin_history_state,
@@ -1183,12 +1169,7 @@ def build_admin_views(
         ],
     ).then(
         admin_history_load_chat,
-        inputs=[
-            admin_history_selected,
-            admin_history_state,
-            admin_manual_ratings,
-            admin_download_path,
-        ],
+        inputs=[admin_history_selected, admin_history_state, admin_download_path],
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
@@ -1200,13 +1181,12 @@ def build_admin_views(
             admin_download_path,
             adHistoryDownload,
             adCommentInput,
-            adManualRatingMsg,
         ],
     )
 
     adHistoryChat.change(
         admin_history_load_chat,
-        inputs=[adHistoryChat, admin_history_state, admin_manual_ratings, admin_download_path],
+        inputs=[adHistoryChat, admin_history_state, admin_download_path],
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
@@ -1218,13 +1198,12 @@ def build_admin_views(
             admin_download_path,
             adHistoryDownload,
             adCommentInput,
-            adManualRatingMsg,
         ],
     )
 
     adHistoryLoad.click(
         admin_history_load_chat,
-        inputs=[adHistoryChat, admin_history_state, admin_manual_ratings, admin_download_path],
+        inputs=[adHistoryChat, admin_history_state, admin_download_path],
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
@@ -1236,7 +1215,6 @@ def build_admin_views(
             admin_download_path,
             adHistoryDownload,
             adCommentInput,
-            adManualRatingMsg,
         ],
     )
 
@@ -1248,14 +1226,14 @@ def build_admin_views(
 
     adAddComment.click(
         admin_history_add_comment,
-        inputs=[admin_history_selected, adCommentInput, admin_history_state, auth_state],
+        inputs=[
+            admin_history_selected,
+            adManualRating,
+            adCommentInput,
+            admin_history_state,
+            auth_state,
+        ],
         outputs=[admin_history_state, adCommentInput, adHistoryComments, adHistoryNotice],
-    )
-
-    adManualRating.change(
-        admin_history_store_manual_rating,
-        inputs=[admin_history_selected, adManualRating, admin_manual_ratings],
-        outputs=[admin_manual_ratings, adManualRatingMsg],
     )
 
     adHistoryDownload.click(
@@ -1346,7 +1324,6 @@ __all__ = [
     "admin_history_load_chat",
     "admin_history_generate_evaluation",
     "admin_history_add_comment",
-    "admin_history_store_manual_rating",
     "admin_history_prepare_download",
     "eval_refresh_dropdown",
     "eval_load",

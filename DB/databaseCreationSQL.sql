@@ -92,11 +92,20 @@ CREATE TABLE IF NOT EXISTS public.chat_evaluations (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   chat_id       uuid NOT NULL REFERENCES public.chats(id)   ON DELETE CASCADE,
   evaluator_id  uuid NOT NULL REFERENCES public.users(id)   ON DELETE RESTRICT,
-  rubric        jsonb NOT NULL,               -- ex.: { clareza: 4, raciocinio: 3, ... }
   overall_score numeric(5,2) NOT NULL,        -- 0..100 (ajuste conforme sua escala)
-  comments      text,
+  comments      text        NOT NULL,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS public.automated_chat_evaluations (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_id         uuid NOT NULL REFERENCES public.chats(id) ON DELETE CASCADE,
+  bot_evaluations jsonb NOT NULL,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_automated_chat_evals_chat
+  ON public.automated_chat_evaluations (chat_id, created_at DESC);
 
 -- (Opcional) chat_messages
 -- CREATE TABLE IF NOT EXISTS public.chat_messages (

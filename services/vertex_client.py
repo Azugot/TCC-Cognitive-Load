@@ -230,8 +230,13 @@ def generate_chat_evaluation(
 
     model = _vertex_init_or_raise(cfg)
     prompt = (
-        "Based on the conversation, how would you rate the students progress on learning "
-        f"{subject_text}? What are the things they seem to struggle more?\n\n"
+        "You are an experienced teacher evaluating a tutoring session. "
+        "Analyze the conversation transcript and provide a concise assessment of the student's "
+        "progress on the subjects: "
+        f"{subject_text}. Describe what they are doing well and where they struggle. "
+        "Respond strictly as JSON with two fields: \n"
+        "{\n  \"score\": <number between 0 and 100>,\n  \"text\": \"<detailed feedback>\"\n}.\n"
+        "Do not add any additional commentary outside the JSON.\n\n"
         "Conversation transcript:\n"
         f"{transcript}"
     )
@@ -243,4 +248,61 @@ def generate_chat_evaluation(
     }
 
     response = model.generate_content(prompt, generation_config=generation_config)
-    return _collect_response_text(response).strip()
+    raw_output = _collect_response_text(response).strip()
+
+    cleaned = raw_output.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+
+    parsed = None
+    if cleaned:
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            pass
+
+    if isinstance(parsed, list) and parsed:
+        parsed = parsed[0]
+
+    score_value = None
+    text_value = ""
+    if isinstance(parsed, dict):
+        score_raw = (
+            parsed.get("score")
+            or parsed.get("rating")
+            or parsed.get("grade")
+            or parsed.get("nota")
+        )
+        text_value = (
+            parsed.get("text")
+            or parsed.get("feedback")
+            or parsed.get("evaluation")
+            or parsed.get("analysis")
+            or ""
+        )
+        try:
+            if score_raw is not None:
+                score_value = float(score_raw)
+        except (TypeError, ValueError):
+            score_value = None
+    else:
+        match = re.search(r"(score|nota)[^0-9]*([0-9]+(?:\.[0-9]+)?)", cleaned, re.IGNORECASE)
+        if match:
+            try:
+                score_value = float(match.group(2))
+            except ValueError:
+                score_value = None
+        text_value = cleaned
+
+    if score_value is not None:
+        score_value = max(0.0, min(100.0, score_value))
+
+    if not text_value:
+        text_value = cleaned or raw_output
+
+    return {
+        "text": str(text_value).strip(),
+        "score": score_value,
+        "raw": raw_output,
+    }

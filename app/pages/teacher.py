@@ -33,7 +33,6 @@ from app.pages.history_shared import (
     generate_auto_evaluation,
     load_chat_entry,
     prepare_download,
-    store_manual_rating,
 )
 from app.utils import (
     _auth_user_id,
@@ -55,7 +54,7 @@ class TeacherView:
     back_button: gr.Button
 
 
-def teacher_history_refresh(auth, classroom_filter, manual_ratings):
+def teacher_history_refresh(auth, classroom_filter):
     teacher_id = _auth_user_id(auth)
     if not teacher_id:
         return (
@@ -124,7 +123,6 @@ def teacher_history_refresh(auth, classroom_filter, manual_ratings):
 def teacher_history_load_chat(
     chat_id,
     history_entries,
-    manual_ratings,
     current_download_path,
 ):
     result = load_chat_entry(chat_id, history_entries, current_download_path)
@@ -135,8 +133,7 @@ def teacher_history_load_chat(
         else:
             gr.Warning(result.notice)
 
-    manual_map = manual_ratings or {}
-    manual_value = manual_map.get(result.chat_id, 0) if result.chat_id else 0
+    manual_value = 0
 
     return (
         result.chat_id,
@@ -148,7 +145,6 @@ def teacher_history_load_chat(
         result.transcript_text,
         result.download_path,
         gr.update(visible=result.download_visible),
-        gr.update(value=""),
         gr.update(value=""),
     )
 
@@ -165,9 +161,10 @@ def teacher_history_generate_evaluation(
     return gr.update(value=evaluation), entries, metadata_update, notice
 
 
-def teacher_history_add_comment(chat_id, comment_text, history_entries, auth):
+def teacher_history_add_comment(chat_id, rating, comment_text, history_entries, auth):
     updated, comments_md, notice = append_chat_comment(
         chat_id,
+        rating,
         comment_text,
         history_entries,
         author_id=_auth_user_id(auth),
@@ -179,10 +176,6 @@ def teacher_history_add_comment(chat_id, comment_text, history_entries, auth):
         return updated, gr.update(value=comment_text), gr.update(), notice
 
     return updated, gr.update(value=""), gr.update(value=comments_md), notice
-
-
-def teacher_history_store_manual_rating(chat_id, rating, manual_state):
-    return store_manual_rating(chat_id, rating, manual_state)
 
 
 def teacher_history_prepare_download(download_path):
@@ -684,7 +677,6 @@ def build_teacher_view(
     teacher_history_state = gr.State([])
     teacher_history_selected = gr.State(None)
     teacher_history_transcript = gr.State("")
-    teacher_manual_ratings = gr.State({})
     teacher_download_path = gr.State(None)
 
     with gr.Column(visible=False) as viewTeacher:
@@ -776,15 +768,14 @@ def build_teacher_view(
             tHistoryEvaluation = gr.Textbox(
                 label="Avaliação automática (Vertex)", lines=6, interactive=False, value=""
             )
-            with gr.Row():
-                tManualRating = gr.Slider(
-                    0,
-                    100,
-                    value=0,
-                    step=1,
-                    label="Avaliação manual (0-100)",
-                )
-                tManualRatingMsg = gr.Markdown("")
+            tManualRating = gr.Slider(
+                0,
+                100,
+                value=0,
+                step=1,
+                label="Avaliação manual (0-100)",
+            )
+            gr.Markdown("A nota selecionada será registrada junto com o comentário enviado.")
             tHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
             tCommentInput = gr.Textbox(
                 label="Novo comentário",
@@ -893,7 +884,7 @@ def build_teacher_view(
 
     tHistoryRefresh.click(
         teacher_history_refresh,
-        inputs=[auth_state, tHistoryClass, teacher_manual_ratings],
+        inputs=[auth_state, tHistoryClass],
         outputs=[
             tHistoryTable,
             teacher_history_state,
@@ -906,7 +897,6 @@ def build_teacher_view(
         inputs=[
             teacher_history_selected,
             teacher_history_state,
-            teacher_manual_ratings,
             teacher_download_path,
         ],
         outputs=[
@@ -920,13 +910,12 @@ def build_teacher_view(
             teacher_download_path,
             tHistoryDownload,
             tCommentInput,
-            tManualRatingMsg,
         ],
     )
 
     tHistoryClass.change(
         teacher_history_refresh,
-        inputs=[auth_state, tHistoryClass, teacher_manual_ratings],
+        inputs=[auth_state, tHistoryClass],
         outputs=[
             tHistoryTable,
             teacher_history_state,
@@ -939,7 +928,6 @@ def build_teacher_view(
         inputs=[
             teacher_history_selected,
             teacher_history_state,
-            teacher_manual_ratings,
             teacher_download_path,
         ],
         outputs=[
@@ -953,13 +941,12 @@ def build_teacher_view(
             teacher_download_path,
             tHistoryDownload,
             tCommentInput,
-            tManualRatingMsg,
         ],
     )
 
     tHistoryChat.change(
         teacher_history_load_chat,
-        inputs=[tHistoryChat, teacher_history_state, teacher_manual_ratings, teacher_download_path],
+        inputs=[tHistoryChat, teacher_history_state, teacher_download_path],
         outputs=[
             teacher_history_selected,
             tHistoryMetadata,
@@ -971,13 +958,12 @@ def build_teacher_view(
             teacher_download_path,
             tHistoryDownload,
             tCommentInput,
-            tManualRatingMsg,
         ],
     )
 
     tHistoryLoad.click(
         teacher_history_load_chat,
-        inputs=[tHistoryChat, teacher_history_state, teacher_manual_ratings, teacher_download_path],
+        inputs=[tHistoryChat, teacher_history_state, teacher_download_path],
         outputs=[
             teacher_history_selected,
             tHistoryMetadata,
@@ -989,7 +975,6 @@ def build_teacher_view(
             teacher_download_path,
             tHistoryDownload,
             tCommentInput,
-            tManualRatingMsg,
         ],
     )
 
@@ -1005,14 +990,14 @@ def build_teacher_view(
 
     tAddComment.click(
         teacher_history_add_comment,
-        inputs=[teacher_history_selected, tCommentInput, teacher_history_state, auth_state],
+        inputs=[
+            teacher_history_selected,
+            tManualRating,
+            tCommentInput,
+            teacher_history_state,
+            auth_state,
+        ],
         outputs=[teacher_history_state, tCommentInput, tHistoryComments, tHistoryNotice],
-    )
-
-    tManualRating.change(
-        teacher_history_store_manual_rating,
-        inputs=[teacher_history_selected, tManualRating, teacher_manual_ratings],
-        outputs=[teacher_manual_ratings, tManualRatingMsg],
     )
 
     tHistoryDownload.click(
