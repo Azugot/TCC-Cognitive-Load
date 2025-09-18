@@ -1,8 +1,6 @@
 """Admin area utilities and Gradio view builders."""
 
 from __future__ import annotations
-
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -15,6 +13,7 @@ from services.supabase_client import (
     create_subject_record,
     delete_classroom_record,
     fetch_classroom_domain,
+    list_all_chats,
     remove_classroom_student,
     remove_classroom_teacher,
     set_classroom_theme_config,
@@ -36,8 +35,17 @@ from app.utils import (
     _is_admin,
     _merge_notice,
     _normalize_username,
-    _student_username,
     _teacher_username,
+)
+
+from app.pages.history_shared import (
+    _format_timestamp,
+    _history_table_data,
+    append_chat_comment,
+    generate_auto_evaluation,
+    load_chat_entry,
+    prepare_download,
+    store_manual_rating,
 )
 
 
@@ -87,21 +95,149 @@ def _render_subjects_md(subjects_by_class, selected_id, classrooms):
     return title + "\n".join(bullets)
 
 
-def _render_history_md(chats_map, owner=None):
-    if not chats_map:
-        return "⚠️ Ainda não há conversas."
-    rows = []
-    for cid, chat in chats_map.items():
-        if owner and chat.get("owner") != owner:
+def _admin_history_dropdown(classrooms, current_value=None):
+    choices = [("Todas as salas", "")]
+    for classroom in classrooms or []:
+        cid = classroom.get("id")
+        if not cid:
             continue
-        ts = chat.get("created_at")
-        score = chat.get("score")
-        title = chat.get("title") or cid
-        tag = f" (nota: {score})" if score is not None else ""
-        rows.append(
-            f"- **{title}** — id: `{cid}` — autor: `{chat.get('owner')}` — {time.strftime('%d/%m %H:%M', time.localtime(ts))}{tag}"
+        label = classroom.get("name") or cid
+        choices.append((label, cid))
+    valid_ids = [value for _, value in choices]
+    normalized = current_value or ""
+    value = normalized if normalized in valid_ids else (choices[0][1] if choices else None)
+    return gr.update(choices=choices, value=value)
+
+
+def admin_history_dropdown(classrooms, current_value=None):
+    return _admin_history_dropdown(classrooms, current_value)
+
+
+def admin_history_refresh(auth, classroom_filter, _manual_ratings):
+    if not _is_admin(auth):
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            "⚠️ Apenas administradores podem visualizar todos os chats.",
+            None,
         )
-    return "### Conversas registradas\n" + ("\n".join(rows) if rows else "⚠️ Nenhuma conversa para o filtro aplicado.")
+
+    try:
+        chats = list_all_chats(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            users_table=SUPABASE_USERS_TABLE,
+        )
+    except SupabaseConfigurationError:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para consultar o histórico.",
+            None,
+        )
+    except SupabaseOperationError as err:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            f"❌ Erro ao consultar chats: {err}",
+            None,
+        )
+
+    classroom_filter = (classroom_filter or "").strip()
+    if classroom_filter:
+        filtered = [chat for chat in chats if str(chat.get("classroom_id")) == classroom_filter]
+    else:
+        filtered = chats
+
+    table = _history_table_data(filtered)
+    dropdown_choices = []
+    for chat in filtered:
+        chat_id = chat.get("id")
+        if not chat_id:
+            continue
+        student = chat.get("student_name") or chat.get("student_login") or "Aluno"
+        classroom = chat.get("classroom_name") or chat.get("classroom_id") or "Sala"
+        started = _format_timestamp(chat.get("started_at"))
+        dropdown_choices.append((f"{student} — {classroom} — {started}", chat_id))
+
+    default_id = dropdown_choices[0][1] if dropdown_choices else None
+    message = (
+        f"✅ {len(filtered)} chat(s) encontrados." if filtered else "ℹ️ Nenhum chat para o filtro aplicado."
+    )
+    return (
+        gr.update(value=table),
+        filtered,
+        gr.update(choices=dropdown_choices, value=default_id),
+        message,
+        default_id,
+    )
+
+
+def admin_history_load_chat(chat_id, history_entries, manual_ratings, current_download_path):
+    result = load_chat_entry(chat_id, history_entries, current_download_path)
+
+    if result.notice:
+        if result.notice.startswith("❌"):
+            gr.Error(result.notice)
+        else:
+            gr.Warning(result.notice)
+
+    manual_map = manual_ratings or {}
+    manual_value = manual_map.get(result.chat_id, 0) if result.chat_id else 0
+
+    return (
+        result.chat_id,
+        gr.update(value=result.metadata_md),
+        gr.update(value=result.preview_text),
+        gr.update(value=result.evaluation_text),
+        gr.update(value=manual_value),
+        gr.update(value=result.comments_md),
+        result.transcript_text,
+        result.download_path,
+        gr.update(visible=result.download_visible),
+        gr.update(value=""),
+        gr.update(value=""),
+    )
+
+
+def admin_history_generate_evaluation(chat_id, transcript, history_entries):
+    evaluation, entries, metadata, notice = generate_auto_evaluation(
+        chat_id, transcript, history_entries
+    )
+    metadata_update = gr.update(value=metadata) if metadata is not None else gr.update()
+    return gr.update(value=evaluation), entries, metadata_update, notice
+
+
+def admin_history_add_comment(chat_id, comment_text, history_entries, auth):
+    login = _teacher_username(auth) or _normalize_username((auth or {}).get("username"))
+    updated, comments_md, notice = append_chat_comment(
+        chat_id,
+        comment_text,
+        history_entries,
+        author_id=_auth_user_id(auth),
+        author_login=login,
+        author_name=(auth or {}).get("username"),
+    )
+
+    if comments_md is None:
+        return updated, gr.update(value=comment_text), gr.update(), notice
+
+    return updated, gr.update(value=""), gr.update(value=comments_md), notice
+
+
+def admin_history_store_manual_rating(chat_id, rating, manual_state):
+    return store_manual_rating(chat_id, rating, manual_state)
+
+
+def admin_history_prepare_download(download_path):
+    path = prepare_download(download_path)
+    if path:
+        return path
+    gr.Warning("⚠️ Nenhum arquivo disponível para download.")
+    return None
 
 
 def _render_eval_md(chat):
@@ -650,11 +786,6 @@ def admin_apply_active(cls_id, actives, subjects_by_class, classrooms):
     return classes, subjects_map, chk, md
 
 
-def refresh_history(chats_map, mine_only, auth):
-    user = (auth or {}).get("username")
-    return _render_history_md(chats_map, owner=user if mine_only else None)
-
-
 def eval_refresh_dropdown(chats_map):
     ids = []
     for cid, chat in (chats_map or {}).items():
@@ -720,6 +851,12 @@ def build_admin_views(
     admin_nav_state: gr.State,
     studio_container: gr.Column,
 ) -> AdminViews:
+    admin_history_state = gr.State([])
+    admin_history_selected = gr.State(None)
+    admin_history_transcript = gr.State("")
+    admin_manual_ratings = gr.State({})
+    admin_download_path = gr.State(None)
+
     with gr.Column(visible=False) as viewHomeAdmin:
         adminGreet = gr.Markdown("## 🧭 Home do Admin")
         with gr.Row():
@@ -800,11 +937,46 @@ def build_admin_views(
     with gr.Column(visible=False) as viewHistory:
         gr.Markdown("## 🗂️ Histórico de Chats")
         with gr.Row():
-            histMineOnly = gr.Checkbox(value=False, label="Mostrar apenas meus chats")
-            btnHistoryRefresh = gr.Button("🔄 Atualizar")
-        historyMd = gr.Markdown("")
+            adHistoryClass = gr.Dropdown(choices=[], label="Sala", value="")
+            adHistoryRefresh = gr.Button("🔄 Atualizar histórico")
+        adHistoryInfo = gr.Markdown("Selecione uma sala para filtrar ou mantenha em branco para ver todas.")
+        adHistoryTable = gr.Dataframe(
+            headers=[
+                "Aluno",
+                "Sala",
+                "Assuntos",
+                "Resumo",
+                "Nota",
+                "Iniciado em",
+            ],
+            datatype=["str"] * 6,
+            interactive=False,
+            wrap=True,
+            height=200,
+        )
         with gr.Row():
+            adHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
+            adHistoryLoad = gr.Button("📄 Ver detalhes")
+        adHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
+        adHistoryPreview = gr.Textbox(label="Prévia do PDF", lines=12, interactive=False, value="")
+        with gr.Row():
+            adHistoryDownload = gr.DownloadButton("⬇️ Baixar PDF", visible=False, variant="secondary")
+            adHistoryGenerateEval = gr.Button("🤖 Gerar avaliação automática", variant="secondary")
+        adHistoryEvaluation = gr.Textbox(
+            label="Avaliação automática (Vertex)", lines=6, interactive=False, value=""
+        )
+        with gr.Row():
+            adManualRating = gr.Slider(0, 100, value=0, step=1, label="Avaliação manual (0-100)")
+            adManualRatingMsg = gr.Markdown("")
+        adHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
+        adCommentInput = gr.Textbox(
+            label="Novo comentário",
+            placeholder="Compartilhe observações com os professores",
+        )
+        with gr.Row():
+            adAddComment = gr.Button("💬 Registrar comentário")
             histBack = gr.Button("← Voltar à Home do Admin")
+        adHistoryNotice = gr.Markdown("")
 
     with gr.Column(visible=False) as viewEvaluate:
         gr.Markdown("## 📝 Avaliar Chats")
@@ -836,6 +1008,10 @@ def build_admin_views(
     navHistory.click(
         lambda: _go_admin("history"),
         outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    ).then(
+        admin_history_dropdown,
+        inputs=[classrooms_state, adHistoryClass],
+        outputs=adHistoryClass,
     )
     navEvaluate.click(
         lambda: _go_admin("evaluate"),
@@ -863,6 +1039,10 @@ def build_admin_views(
         admin_refresh_subjects,
         inputs=[classrooms_state, subjects_state, clsSelect],
         outputs=[clsActiveList, clsSubjectsMd],
+    ).then(
+        admin_history_dropdown,
+        inputs=[classrooms_state, adHistoryClass],
+        outputs=adHistoryClass,
     )
 
     btnRefreshCls.click(
@@ -873,6 +1053,10 @@ def build_admin_views(
         admin_refresh_subjects,
         inputs=[classrooms_state, subjects_state, clsSelect],
         outputs=[clsActiveList, clsSubjectsMd],
+    ).then(
+        admin_history_dropdown,
+        inputs=[classrooms_state, adHistoryClass],
+        outputs=adHistoryClass,
     )
 
     clsSelect.change(
@@ -893,6 +1077,10 @@ def build_admin_views(
         admin_refresh_subjects,
         inputs=[classrooms_state, subjects_state, clsSelect],
         outputs=[clsActiveList, clsSubjectsMd],
+    ).then(
+        admin_history_dropdown,
+        inputs=[classrooms_state, adHistoryClass],
+        outputs=adHistoryClass,
     )
 
     btnDeleteCls.click(
@@ -903,6 +1091,10 @@ def build_admin_views(
         admin_refresh_subjects,
         inputs=[classrooms_state, subjects_state, clsSelect],
         outputs=[clsActiveList, clsSubjectsMd],
+    ).then(
+        admin_history_dropdown,
+        inputs=[classrooms_state, adHistoryClass],
+        outputs=adHistoryClass,
     )
 
     membClass.change(
@@ -946,10 +1138,130 @@ def build_admin_views(
         outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
     )
 
-    btnHistoryRefresh.click(
-        refresh_history,
-        inputs=[chats_state, histMineOnly, auth_state],
-        outputs=[historyMd],
+    adHistoryRefresh.click(
+        admin_history_refresh,
+        inputs=[auth_state, adHistoryClass, admin_manual_ratings],
+        outputs=[
+            adHistoryTable,
+            admin_history_state,
+            adHistoryChat,
+            adHistoryInfo,
+            admin_history_selected,
+        ],
+    ).then(
+        admin_history_load_chat,
+        inputs=[
+            admin_history_selected,
+            admin_history_state,
+            admin_manual_ratings,
+            admin_download_path,
+        ],
+        outputs=[
+            admin_history_selected,
+            adHistoryMetadata,
+            adHistoryPreview,
+            adHistoryEvaluation,
+            adManualRating,
+            adHistoryComments,
+            admin_history_transcript,
+            admin_download_path,
+            adHistoryDownload,
+            adCommentInput,
+            adManualRatingMsg,
+        ],
+    )
+
+    adHistoryClass.change(
+        admin_history_refresh,
+        inputs=[auth_state, adHistoryClass, admin_manual_ratings],
+        outputs=[
+            adHistoryTable,
+            admin_history_state,
+            adHistoryChat,
+            adHistoryInfo,
+            admin_history_selected,
+        ],
+    ).then(
+        admin_history_load_chat,
+        inputs=[
+            admin_history_selected,
+            admin_history_state,
+            admin_manual_ratings,
+            admin_download_path,
+        ],
+        outputs=[
+            admin_history_selected,
+            adHistoryMetadata,
+            adHistoryPreview,
+            adHistoryEvaluation,
+            adManualRating,
+            adHistoryComments,
+            admin_history_transcript,
+            admin_download_path,
+            adHistoryDownload,
+            adCommentInput,
+            adManualRatingMsg,
+        ],
+    )
+
+    adHistoryChat.change(
+        admin_history_load_chat,
+        inputs=[adHistoryChat, admin_history_state, admin_manual_ratings, admin_download_path],
+        outputs=[
+            admin_history_selected,
+            adHistoryMetadata,
+            adHistoryPreview,
+            adHistoryEvaluation,
+            adManualRating,
+            adHistoryComments,
+            admin_history_transcript,
+            admin_download_path,
+            adHistoryDownload,
+            adCommentInput,
+            adManualRatingMsg,
+        ],
+    )
+
+    adHistoryLoad.click(
+        admin_history_load_chat,
+        inputs=[adHistoryChat, admin_history_state, admin_manual_ratings, admin_download_path],
+        outputs=[
+            admin_history_selected,
+            adHistoryMetadata,
+            adHistoryPreview,
+            adHistoryEvaluation,
+            adManualRating,
+            adHistoryComments,
+            admin_history_transcript,
+            admin_download_path,
+            adHistoryDownload,
+            adCommentInput,
+            adManualRatingMsg,
+        ],
+    )
+
+    adHistoryGenerateEval.click(
+        admin_history_generate_evaluation,
+        inputs=[admin_history_selected, admin_history_transcript, admin_history_state],
+        outputs=[adHistoryEvaluation, admin_history_state, adHistoryMetadata, adHistoryNotice],
+    )
+
+    adAddComment.click(
+        admin_history_add_comment,
+        inputs=[admin_history_selected, adCommentInput, admin_history_state, auth_state],
+        outputs=[admin_history_state, adCommentInput, adHistoryComments, adHistoryNotice],
+    )
+
+    adManualRating.change(
+        admin_history_store_manual_rating,
+        inputs=[admin_history_selected, adManualRating, admin_manual_ratings],
+        outputs=[admin_manual_ratings, adManualRatingMsg],
+    )
+
+    adHistoryDownload.click(
+        admin_history_prepare_download,
+        inputs=[admin_download_path],
+        outputs=adHistoryDownload,
     )
 
     histBack.click(
@@ -1015,7 +1327,6 @@ __all__ = [
     "build_admin_views",
     "_render_classrooms_md",
     "_render_subjects_md",
-    "_render_history_md",
     "_render_eval_md",
     "_refresh_states",
     "_sync_domain_after_auth",
@@ -1030,7 +1341,13 @@ __all__ = [
     "admin_refresh_subjects",
     "admin_add_subject",
     "admin_apply_active",
-    "refresh_history",
+    "admin_history_dropdown",
+    "admin_history_refresh",
+    "admin_history_load_chat",
+    "admin_history_generate_evaluation",
+    "admin_history_add_comment",
+    "admin_history_store_manual_rating",
+    "admin_history_prepare_download",
     "eval_refresh_dropdown",
     "eval_load",
     "eval_save",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 import gradio as gr
 
@@ -13,6 +13,7 @@ from services.supabase_client import (
     create_classroom_record,
     create_subject_record,
     fetch_user_record,
+    list_teacher_classroom_chats,
     remove_classroom_student,
     set_classroom_theme_config,
     update_subject_active,
@@ -22,6 +23,18 @@ from services.supabase_client import (
 
 from app.config import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_USERS_TABLE
 from app.pages.admin import _render_classrooms_md, _render_subjects_md, _refresh_states
+from app.pages.history_shared import (
+    _chat_metadata_md,
+    _comments_markdown,
+    _format_timestamp,
+    _history_table_data,
+    _subjects_label,
+    append_chat_comment,
+    generate_auto_evaluation,
+    load_chat_entry,
+    prepare_download,
+    store_manual_rating,
+)
 from app.utils import (
     _auth_user_id,
     _get_class_by_id,
@@ -42,6 +55,143 @@ class TeacherView:
     back_button: gr.Button
 
 
+def teacher_history_refresh(auth, classroom_filter, manual_ratings):
+    teacher_id = _auth_user_id(auth)
+    if not teacher_id:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            "⚠️ Faça login como professor para visualizar os chats.",
+            None,
+        )
+
+    try:
+        chats = list_teacher_classroom_chats(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            teacher_id=teacher_id,
+            users_table=SUPABASE_USERS_TABLE,
+        )
+    except SupabaseConfigurationError:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para acessar o histórico de chats.",
+            None,
+        )
+    except SupabaseOperationError as err:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            f"❌ Erro ao consultar chats: {err}",
+            None,
+        )
+
+    classroom_filter = (classroom_filter or "").strip()
+    if classroom_filter:
+        filtered = [
+            chat for chat in chats if str(chat.get("classroom_id")) == classroom_filter
+        ]
+    else:
+        filtered = chats
+
+    table = _history_table_data(filtered)
+    dropdown_choices = []
+    for chat in filtered:
+        chat_id = chat.get("id")
+        if not chat_id:
+            continue
+        student = chat.get("student_name") or chat.get("student_login") or "Aluno"
+        started = _format_timestamp(chat.get("started_at"))
+        dropdown_choices.append((f"{student} — {started}", chat_id))
+
+    default_id = dropdown_choices[0][1] if dropdown_choices else None
+    message = (
+        f"✅ {len(filtered)} chat(s) encontrados." if filtered else "ℹ️ Nenhum chat para o filtro."
+    )
+    return (
+        gr.update(value=table),
+        filtered,
+        gr.update(choices=dropdown_choices, value=default_id),
+        message,
+        default_id,
+    )
+
+
+def teacher_history_load_chat(
+    chat_id,
+    history_entries,
+    manual_ratings,
+    current_download_path,
+):
+    result = load_chat_entry(chat_id, history_entries, current_download_path)
+
+    if result.notice:
+        if result.notice.startswith("❌"):
+            gr.Error(result.notice)
+        else:
+            gr.Warning(result.notice)
+
+    manual_map = manual_ratings or {}
+    manual_value = manual_map.get(result.chat_id, 0) if result.chat_id else 0
+
+    return (
+        result.chat_id,
+        gr.update(value=result.metadata_md),
+        gr.update(value=result.preview_text),
+        gr.update(value=result.evaluation_text),
+        gr.update(value=manual_value),
+        gr.update(value=result.comments_md),
+        result.transcript_text,
+        result.download_path,
+        gr.update(visible=result.download_visible),
+        gr.update(value=""),
+        gr.update(value=""),
+    )
+
+
+def teacher_history_generate_evaluation(
+    chat_id,
+    transcript,
+    history_entries,
+):
+    evaluation, entries, metadata, notice = generate_auto_evaluation(
+        chat_id, transcript, history_entries
+    )
+    metadata_update = gr.update(value=metadata) if metadata is not None else gr.update()
+    return gr.update(value=evaluation), entries, metadata_update, notice
+
+
+def teacher_history_add_comment(chat_id, comment_text, history_entries, auth):
+    updated, comments_md, notice = append_chat_comment(
+        chat_id,
+        comment_text,
+        history_entries,
+        author_id=_auth_user_id(auth),
+        author_login=_teacher_username(auth),
+        author_name=(auth or {}).get("username"),
+    )
+
+    if comments_md is None:
+        return updated, gr.update(value=comment_text), gr.update(), notice
+
+    return updated, gr.update(value=""), gr.update(value=comments_md), notice
+
+
+def teacher_history_store_manual_rating(chat_id, rating, manual_state):
+    return store_manual_rating(chat_id, rating, manual_state)
+
+
+def teacher_history_prepare_download(download_path):
+    path = prepare_download(download_path)
+    if path:
+        return path
+    gr.Warning("⚠️ Nenhum arquivo disponível para download.")
+    return None
+
 def _teacher_classes(auth, classrooms: Iterable[Dict[str, Any]]):
     me = _teacher_username(auth)
     out = []
@@ -55,6 +205,13 @@ def _teacher_classes(auth, classrooms: Iterable[Dict[str, Any]]):
 def _teacher_choices(auth, classrooms):
     my = _teacher_classes(auth, classrooms)
     return [(c["name"], c["id"]) for c in my]
+
+
+def _teacher_history_dropdown(auth, classrooms, current_value=None):
+    choices = _teacher_choices(auth, classrooms)
+    valid_ids = [value for _, value in choices]
+    value = current_value if current_value in valid_ids else None
+    return gr.update(choices=choices, value=value)
 
 
 def _render_teacher_members_md(cls_id, classrooms):
@@ -524,6 +681,12 @@ def build_teacher_view(
     subjects_state: gr.State,
     home_view: gr.Column,
 ) -> TeacherView:
+    teacher_history_state = gr.State([])
+    teacher_history_selected = gr.State(None)
+    teacher_history_transcript = gr.State("")
+    teacher_manual_ratings = gr.State({})
+    teacher_download_path = gr.State(None)
+
     with gr.Column(visible=False) as viewTeacher:
         gr.Markdown("## 🏫 Gerenciar Salas")
         teacherNotice = gr.Markdown("")
@@ -577,6 +740,59 @@ def build_teacher_view(
                 btnTeacherSaveParams = gr.Button("💾 Salvar parâmetros da sala", variant="primary")
                 btnTeacherLoadParams = gr.Button("🔄 Carregar da sala selecionada")
             tParamsMsg = gr.Markdown("")
+        with gr.Accordion("Histórico de Chats", open=False):
+            with gr.Row():
+                tHistoryClass = gr.Dropdown(choices=[], label="Sala", value=None)
+                tHistoryRefresh = gr.Button("🔄 Atualizar histórico")
+            tHistoryInfo = gr.Markdown("Selecione uma sala para listar os chats.")
+            tHistoryTable = gr.Dataframe(
+                headers=[
+                    "Aluno",
+                    "Sala",
+                    "Assuntos",
+                    "Resumo",
+                    "Nota",
+                    "Iniciado em",
+                ],
+                datatype=["str"] * 6,
+                interactive=False,
+                wrap=True,
+                height=200,
+            )
+            with gr.Row():
+                tHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
+                tHistoryLoad = gr.Button("📄 Ver detalhes")
+            tHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
+            tHistoryPreview = gr.Textbox(
+                label="Prévia do PDF", lines=12, interactive=False, value=""
+            )
+            with gr.Row():
+                tHistoryDownload = gr.DownloadButton(
+                    "⬇️ Baixar PDF", visible=False, variant="secondary"
+                )
+                tHistoryGenerateEval = gr.Button(
+                    "🤖 Gerar avaliação automática", variant="secondary"
+                )
+            tHistoryEvaluation = gr.Textbox(
+                label="Avaliação automática (Vertex)", lines=6, interactive=False, value=""
+            )
+            with gr.Row():
+                tManualRating = gr.Slider(
+                    0,
+                    100,
+                    value=0,
+                    step=1,
+                    label="Avaliação manual (0-100)",
+                )
+                tManualRatingMsg = gr.Markdown("")
+            tHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
+            tCommentInput = gr.Textbox(
+                label="Novo comentário",
+                placeholder="Registre observações para outros professores",
+            )
+            with gr.Row():
+                tAddComment = gr.Button("💬 Registrar comentário")
+            tHistoryNotice = gr.Markdown("")
         tClassroomsMd = gr.Markdown("")
         with gr.Row():
             btnTeacherBack = gr.Button("← Voltar à Home")
@@ -629,12 +845,20 @@ def build_teacher_view(
             auth_state,
         ],
         outputs=[classrooms_state, subjects_state, tClassroomsMd, tSelectClass, tSelectClass, teacherNotice],
+    ).then(
+        lambda auth, classrooms, current: _teacher_history_dropdown(auth, classrooms, current),
+        inputs=[auth_state, classrooms_state, tHistoryClass],
+        outputs=tHistoryClass,
     )
 
     btnTeacherRefresh.click(
         teacher_refresh,
         inputs=[auth_state, classrooms_state, subjects_state],
         outputs=[classrooms_state, subjects_state, tClassroomsMd, tSelectClass],
+    ).then(
+        lambda auth, classrooms, current: _teacher_history_dropdown(auth, classrooms, current),
+        inputs=[auth_state, classrooms_state, tHistoryClass],
+        outputs=tHistoryClass,
     )
 
     tSelectClass.change(
@@ -666,6 +890,137 @@ def build_teacher_view(
         inputs=[auth_state, tSelectClass, tActiveList, subjects_state, classrooms_state],
         outputs=[classrooms_state, subjects_state, tSubjectsMd],
     )
+
+    tHistoryRefresh.click(
+        teacher_history_refresh,
+        inputs=[auth_state, tHistoryClass, teacher_manual_ratings],
+        outputs=[
+            tHistoryTable,
+            teacher_history_state,
+            tHistoryChat,
+            tHistoryInfo,
+            teacher_history_selected,
+        ],
+    ).then(
+        teacher_history_load_chat,
+        inputs=[
+            teacher_history_selected,
+            teacher_history_state,
+            teacher_manual_ratings,
+            teacher_download_path,
+        ],
+        outputs=[
+            teacher_history_selected,
+            tHistoryMetadata,
+            tHistoryPreview,
+            tHistoryEvaluation,
+            tManualRating,
+            tHistoryComments,
+            teacher_history_transcript,
+            teacher_download_path,
+            tHistoryDownload,
+            tCommentInput,
+            tManualRatingMsg,
+        ],
+    )
+
+    tHistoryClass.change(
+        teacher_history_refresh,
+        inputs=[auth_state, tHistoryClass, teacher_manual_ratings],
+        outputs=[
+            tHistoryTable,
+            teacher_history_state,
+            tHistoryChat,
+            tHistoryInfo,
+            teacher_history_selected,
+        ],
+    ).then(
+        teacher_history_load_chat,
+        inputs=[
+            teacher_history_selected,
+            teacher_history_state,
+            teacher_manual_ratings,
+            teacher_download_path,
+        ],
+        outputs=[
+            teacher_history_selected,
+            tHistoryMetadata,
+            tHistoryPreview,
+            tHistoryEvaluation,
+            tManualRating,
+            tHistoryComments,
+            teacher_history_transcript,
+            teacher_download_path,
+            tHistoryDownload,
+            tCommentInput,
+            tManualRatingMsg,
+        ],
+    )
+
+    tHistoryChat.change(
+        teacher_history_load_chat,
+        inputs=[tHistoryChat, teacher_history_state, teacher_manual_ratings, teacher_download_path],
+        outputs=[
+            teacher_history_selected,
+            tHistoryMetadata,
+            tHistoryPreview,
+            tHistoryEvaluation,
+            tManualRating,
+            tHistoryComments,
+            teacher_history_transcript,
+            teacher_download_path,
+            tHistoryDownload,
+            tCommentInput,
+            tManualRatingMsg,
+        ],
+    )
+
+    tHistoryLoad.click(
+        teacher_history_load_chat,
+        inputs=[tHistoryChat, teacher_history_state, teacher_manual_ratings, teacher_download_path],
+        outputs=[
+            teacher_history_selected,
+            tHistoryMetadata,
+            tHistoryPreview,
+            tHistoryEvaluation,
+            tManualRating,
+            tHistoryComments,
+            teacher_history_transcript,
+            teacher_download_path,
+            tHistoryDownload,
+            tCommentInput,
+            tManualRatingMsg,
+        ],
+    )
+
+    tHistoryGenerateEval.click(
+        teacher_history_generate_evaluation,
+        inputs=[
+            teacher_history_selected,
+            teacher_history_transcript,
+            teacher_history_state,
+        ],
+        outputs=[tHistoryEvaluation, teacher_history_state, tHistoryMetadata, tHistoryNotice],
+    )
+
+    tAddComment.click(
+        teacher_history_add_comment,
+        inputs=[teacher_history_selected, tCommentInput, teacher_history_state, auth_state],
+        outputs=[teacher_history_state, tCommentInput, tHistoryComments, tHistoryNotice],
+    )
+
+    tManualRating.change(
+        teacher_history_store_manual_rating,
+        inputs=[teacher_history_selected, tManualRating, teacher_manual_ratings],
+        outputs=[teacher_manual_ratings, tManualRatingMsg],
+    )
+
+    tHistoryDownload.click(
+        teacher_history_prepare_download,
+        inputs=[teacher_download_path],
+        outputs=tHistoryDownload,
+    )
+
 
     return TeacherView(
         container=viewTeacher,

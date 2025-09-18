@@ -12,8 +12,10 @@ from postgrest.exceptions import APIError
 
 from .common import (
     SupabaseOperationError,
+    _fetch_users_map,
     _get_client,
     _handle_api_error,
+    _normalize_chat_record,
     _normalize_timestamp,
 )
 
@@ -139,3 +141,75 @@ def create_chat_record(
 
 
 __all__ = ["create_chat_record"]
+
+
+def list_student_chats(
+    url: str,
+    key: str,
+    *,
+    student_id: str,
+    users_table: str = "users",
+) -> List[Dict[str, Any]]:
+    """Return chats registered by a given student."""
+
+    if not student_id:
+        raise SupabaseOperationError(
+            "Identificador do aluno ausente para consultar históricos de chat."
+        )
+
+    client = _get_client(url, key)
+
+    try:
+        chats_resp = (
+            client.table("chats")
+            .select(
+                "id,student_id,classroom_id,content,summary,started_at,ended_at,subject_free_text,topic_source"
+            )
+            .eq("student_id", student_id)
+            .order("started_at", desc=True)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    rows = chats_resp.data or []
+    if not rows:
+        return []
+
+    class_ids = {row.get("classroom_id") for row in rows if row.get("classroom_id")}
+
+    classroom_map: Dict[str, Dict[str, Any]] = {}
+    if class_ids:
+        try:
+            classrooms_resp = (
+                client.table("classrooms")
+                .select("id,name,theme_name")
+                .in_("id", list(class_ids))
+                .execute()
+            )
+        except APIError as err:
+            raise _handle_api_error(err) from err
+        except Exception as exc:
+            raise SupabaseOperationError(str(exc)) from exc
+
+        for row in classrooms_resp.data or []:
+            cid = row.get("id")
+            if not cid:
+                continue
+            classroom_map[cid] = {
+                "name": row.get("name"),
+                "theme_name": row.get("theme_name"),
+            }
+
+    user_map = _fetch_users_map(client, {student_id}, users_table=users_table)
+
+    normalized = [
+        _normalize_chat_record(row, classroom_map=classroom_map, user_map=user_map)
+        for row in rows
+    ]
+    return normalized
+
+
+__all__.append("list_student_chats")

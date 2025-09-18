@@ -2,6 +2,7 @@
 import os
 import json
 import re
+from typing import List, Optional
 
 try:
     import vertexai as _vertexai
@@ -204,3 +205,42 @@ def summarize_chat_history(messages, cfg, *, max_phrases: int = 2) -> str:
     summary = _collect_response_text(response)
     limited = _limit_phrases(summary, max_phrases=max_phrases)
     return limited
+
+
+def generate_chat_evaluation(
+    transcript: str,
+    cfg,
+    *,
+    subjects: Optional[List[str]] = None,
+) -> str:
+    """Generate a qualitative evaluation about the chat using Vertex AI."""
+
+    if not transcript or not transcript.strip():
+        return ""
+
+    subject_text = ""
+    if isinstance(subjects, (list, tuple, set)):
+        normalized = [str(item).strip() for item in subjects if str(item).strip()]
+        subject_text = ", ".join(normalized)
+    elif isinstance(subjects, str):
+        subject_text = subjects.strip()
+
+    if not subject_text:
+        subject_text = "the discussed subjects"
+
+    model = _vertex_init_or_raise(cfg)
+    prompt = (
+        "Based on the conversation, how would you rate the students progress on learning "
+        f"{subject_text}? What are the things they seem to struggle more?\n\n"
+        "Conversation transcript:\n"
+        f"{transcript}"
+    )
+
+    generation_config = {
+        "temperature": 0.3,
+        "top_p": 0.9,
+        "max_output_tokens": 512,
+    }
+
+    response = model.generate_content(prompt, generation_config=generation_config)
+    return _collect_response_text(response).strip()

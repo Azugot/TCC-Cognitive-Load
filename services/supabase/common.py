@@ -9,6 +9,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
+import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from postgrest.exceptions import APIError
@@ -79,6 +81,132 @@ def _normalize_timestamp(value: Any) -> Optional[str]:
         return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat()
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def _ensure_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return dict(parsed)
+        except ValueError:
+            return {}
+    return {}
+
+
+def _normalize_comment_entries(raw_comments: Any) -> List[Dict[str, Any]]:
+    comments: List[Dict[str, Any]] = []
+    if not isinstance(raw_comments, list):
+        return comments
+    for entry in raw_comments:
+        if not isinstance(entry, dict):
+            continue
+        text = entry.get("text") or entry.get("comment")
+        if text is None:
+            continue
+        text_str = str(text).strip()
+        if not text_str:
+            continue
+        comments.append(
+            {
+                "id": entry.get("id"),
+                "author_id": entry.get("author_id"),
+                "author_login": entry.get("author_login"),
+                "author_name": entry.get("author_name"),
+                "created_at": entry.get("created_at"),
+                "text": text_str,
+            }
+        )
+    comments.sort(key=lambda item: item.get("created_at") or "")
+    return comments
+
+
+def _normalize_chat_record(
+    row: Dict[str, Any],
+    *,
+    classroom_map: Optional[Dict[str, Dict[str, Any]]] = None,
+    user_map: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
+) -> Dict[str, Any]:
+    content = _ensure_dict(row.get("content"))
+
+    subjects: List[str] = []
+    raw_subjects = content.get("subjects")
+    if isinstance(raw_subjects, list):
+        for item in raw_subjects:
+            if isinstance(item, str) and item.strip():
+                subjects.append(item.strip())
+
+    summary_value = row.get("summary") or content.get("summary") or ""
+    summary_text = str(summary_value).strip() if summary_value else ""
+    preview = summary_text
+    if not preview:
+        topic = row.get("topic_source") or row.get("subject_free_text")
+        if isinstance(topic, str):
+            preview = topic.strip()
+    if len(preview) > 240:
+        preview = preview[:237].rstrip() + "…"
+
+    bucket = content.get("bucket") or content.get("storage_bucket")
+    path = content.get("path") or content.get("storage_path")
+    storage_path_id = (
+        content.get("storage_path_id")
+        or content.get("storage_chat_id")
+        or content.get("storage_id")
+    )
+
+    comments = _normalize_comment_entries(content.get("teacher_comments"))
+
+    auto_eval = content.get("auto_evaluation")
+    if isinstance(auto_eval, str):
+        auto_eval = auto_eval.strip()
+    elif auto_eval is None:
+        auto_eval = ""
+    else:
+        auto_eval = str(auto_eval).strip()
+
+    grade = content.get("grade")
+    student_goal = content.get("student_goal")
+    if isinstance(student_goal, str):
+        student_goal = student_goal.strip()
+    student_interest = content.get("student_interest")
+    if isinstance(student_interest, str):
+        student_interest = student_interest.strip()
+
+    student_info = (user_map or {}).get(row.get("student_id"), {})
+    classroom_info = (classroom_map or {}).get(row.get("classroom_id"), {})
+
+    normalized = {
+        "id": row.get("id"),
+        "student_id": row.get("student_id"),
+        "student_login": student_info.get("login"),
+        "student_name": student_info.get("display_name")
+        or student_info.get("login"),
+        "classroom_id": row.get("classroom_id"),
+        "classroom_name": classroom_info.get("name"),
+        "classroom_theme": classroom_info.get("theme_name"),
+        "subjects": subjects,
+        "summary": summary_text,
+        "summary_preview": preview,
+        "grade": grade,
+        "storage_bucket": bucket,
+        "storage_path": path,
+        "storage_path_id": storage_path_id,
+        "teacher_comments": comments,
+        "auto_evaluation": auto_eval,
+        "auto_evaluation_updated_at": content.get("auto_evaluation_updated_at"),
+        "started_at": row.get("started_at"),
+        "ended_at": row.get("ended_at"),
+        "subject_free_text": row.get("subject_free_text")
+        or content.get("subject_free_text"),
+        "topic_source": row.get("topic_source") or content.get("topic_source"),
+        "student_goal": student_goal,
+        "student_interest": student_interest,
+        "raw_content": content,
+        "has_attachment": bool(bucket and path),
+    }
+    return normalized
 
 
 def _get_client(url: str, key: str) -> Client:
@@ -272,6 +400,96 @@ def _fetch_users_map(
     return mapping
 
 
+def _load_chat_content(client: Client, chat_id: str) -> Dict[str, Any]:
+    try:
+        response = (
+            client.table("chats").select("content").eq("id", chat_id).limit(1).execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    rows = response.data or []
+    if not rows:
+        raise SupabaseOperationError("Chat não encontrado no Supabase.")
+
+    return _ensure_dict(rows[0].get("content"))
+
+
+def add_chat_comment(
+    url: str,
+    key: str,
+    *,
+    chat_id: str,
+    author_id: Optional[str],
+    author_login: Optional[str],
+    author_name: Optional[str],
+    text: str,
+) -> Dict[str, Any]:
+    """Append a teacher/admin comment to the chat content JSON."""
+
+    normalized_text = (text or "").strip()
+    if not normalized_text:
+        raise SupabaseOperationError("Informe um comentário válido.")
+
+    client = _get_client(url, key)
+    content = _load_chat_content(client, chat_id)
+
+    comments = list(content.get("teacher_comments") or [])
+    sanitized = _normalize_comment_entries(comments)
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "author_id": author_id,
+        "author_login": _normalize_login(author_login or ""),
+        "author_name": author_name or author_login or author_id,
+        "text": normalized_text,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    sanitized.append(entry)
+    content["teacher_comments"] = sanitized
+
+    try:
+        client.table("chats").update({"content": content}).eq("id", chat_id).execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    return entry
+
+
+def set_chat_auto_evaluation(
+    url: str,
+    key: str,
+    *,
+    chat_id: str,
+    evaluation_text: str,
+) -> str:
+    """Persist the generated evaluation text inside the chat content."""
+
+    client = _get_client(url, key)
+    content = _load_chat_content(client, chat_id)
+
+    normalized_text = (evaluation_text or "").strip()
+    if normalized_text:
+        content["auto_evaluation"] = normalized_text
+        content["auto_evaluation_updated_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        content.pop("auto_evaluation", None)
+        content.pop("auto_evaluation_updated_at", None)
+
+    try:
+        client.table("chats").update({"content": content}).eq("id", chat_id).execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    return content.get("auto_evaluation") or ""
+
+
 def reset_cached_client() -> None:
     """Clear the cached Supabase client (useful for tests)."""
 
@@ -291,6 +509,9 @@ __all__ = [
     "_handle_api_error",
     "_normalize_login",
     "_normalize_timestamp",
+    "_normalize_chat_record",
+    "add_chat_comment",
+    "set_chat_auto_evaluation",
     "fetch_user_record",
     "create_user_record",
     "fetch_users_by_role",

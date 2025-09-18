@@ -72,3 +72,47 @@ def upload_file_to_bucket(
 
 
 __all__ = ["upload_file_to_bucket"]
+
+
+def download_file_from_bucket(
+    url: str,
+    key: str,
+    *,
+    bucket: str,
+    storage_path: str,
+) -> bytes:
+    """Download a file from a Supabase Storage bucket."""
+
+    if not bucket or not bucket.strip():
+        raise SupabaseOperationError("Bucket do Storage não informado para download.")
+
+    normalized_path = (storage_path or "").strip().lstrip("/")
+    if not normalized_path:
+        raise SupabaseOperationError("Caminho do arquivo no Storage não informado.")
+
+    client = _get_client(url, key)
+
+    try:
+        data = client.storage.from_(bucket).download(normalized_path)
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(
+            f"Falha ao baixar arquivo do bucket '{bucket}': {exc}"
+        ) from exc
+
+    if isinstance(data, bytes):
+        return data
+
+    # Alguns SDKs retornam objetos com o payload em "data" ou "content".
+    for attr in ("data", "content"):
+        value = getattr(data, attr, None)
+        if isinstance(value, bytes):
+            return value
+
+    raise SupabaseOperationError(
+        "Resposta inesperada ao baixar arquivo do Storage do Supabase."
+    )
+
+
+__all__.append("download_file_from_bucket")

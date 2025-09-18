@@ -14,6 +14,7 @@ from .common import (
     _fetch_users_map,
     _get_client,
     _handle_api_error,
+    _normalize_chat_record,
 )
 
 
@@ -186,6 +187,77 @@ def fetch_classroom_domain(
         )
 
     return classrooms, subjects_by_class
+
+
+def list_all_chats(
+    url: str,
+    key: str,
+    *,
+    limit: Optional[int] = 200,
+    users_table: str = "users",
+) -> List[Dict[str, Any]]:
+    """Return chats across all classrooms (admin scope)."""
+
+    client = _get_client(url, key)
+
+    query = (
+        client.table("chats")
+        .select(
+            "id,student_id,classroom_id,content,summary,started_at,ended_at,subject_free_text,topic_source"
+        )
+        .order("started_at", desc=True)
+    )
+    if isinstance(limit, int) and limit > 0:
+        query = query.limit(limit)
+
+    try:
+        chats_resp = query.execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    rows = chats_resp.data or []
+    if not rows:
+        return []
+
+    classroom_ids: Set[Optional[str]] = {
+        row.get("classroom_id") for row in rows if row.get("classroom_id")
+    }
+    student_ids: Set[Optional[str]] = {
+        row.get("student_id") for row in rows if row.get("student_id")
+    }
+
+    classroom_map: Dict[str, Dict[str, Optional[str]]] = {}
+    if classroom_ids:
+        try:
+            classrooms_resp = (
+                client.table("classrooms")
+                .select("id,name,theme_name")
+                .in_("id", list(classroom_ids))
+                .execute()
+            )
+        except APIError as err:
+            raise _handle_api_error(err) from err
+        except Exception as exc:
+            raise SupabaseOperationError(str(exc)) from exc
+
+        for row in classrooms_resp.data or []:
+            cid = row.get("id")
+            if not cid:
+                continue
+            classroom_map[cid] = {
+                "name": row.get("name"),
+                "theme_name": row.get("theme_name"),
+            }
+
+    user_map = _fetch_users_map(client, student_ids, users_table=users_table)
+
+    normalized = [
+        _normalize_chat_record(row, classroom_map=classroom_map, user_map=user_map)
+        for row in rows
+    ]
+    return normalized
 
 
 def create_classroom_record(
@@ -422,6 +494,7 @@ def update_subject_active(
 
 __all__ = [
     "fetch_classroom_domain",
+    "list_all_chats",
     "create_classroom_record",
     "update_classroom_record",
     "delete_classroom_record",
