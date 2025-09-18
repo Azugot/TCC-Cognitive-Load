@@ -798,6 +798,8 @@ def create_chat_record(
     topic_source: Optional[str] = None,
     summary: Optional[str] = None,
     subject_titles: Optional[List[str]] = None,
+    student_goal: Optional[str] = None,
+    student_interest: Optional[str] = None,
     is_adhoc_chat: bool = False,
     store_messages: bool = False,
     chats_table: str = "chats",
@@ -829,6 +831,17 @@ def create_chat_record(
             content_payload["subjects"] = filtered_subjects
     if is_adhoc_chat and chat_title:
         content_payload["title"] = chat_title
+
+    def _normalize_optional_text(value: Optional[str]) -> str:
+        if value is None:
+            return "None"
+        text = str(value).strip()
+        return text if text else "None"
+
+    content_payload["student_goal"] = _normalize_optional_text(student_goal)
+    content_payload["student_interest"] = _normalize_optional_text(
+        student_interest
+    )
 
     started_iso = _normalize_timestamp(started_at)
     ended_iso = _normalize_timestamp(ended_at)

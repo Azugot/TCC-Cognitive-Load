@@ -1782,6 +1782,8 @@ def student_end_chat(
     classrooms,
     selectedTheme,
     selectedSubjects,
+    studentGoal=None,
+    studentInterests=None,
 ):
     chat_history = history if isinstance(history, list) else []
     docs = docsState if isinstance(docsState, dict) else {}
@@ -1799,6 +1801,17 @@ def student_end_chat(
         for item in selectedSubjects:
             if isinstance(item, str) and item.strip():
                 selected_subjects.append(item.strip())
+
+    goal_text = (
+        str(studentGoal).strip() if isinstance(studentGoal, str) else ""
+    )
+    interest_text = (
+        str(studentInterests).strip()
+        if isinstance(studentInterests, str)
+        else ""
+    )
+    normalized_goal_value = goal_text or "None"
+    normalized_interest_value = interest_text or "None"
 
     def _failure(message: str, warn: bool = False):
         if warn:
@@ -1932,6 +1945,8 @@ def student_end_chat(
             topic_source=topic_value,
             summary=summary_text or None,
             subject_titles=selected_subjects,
+            student_goal=goal_text,
+            student_interest=interest_text,
             is_adhoc_chat=not is_class_chat,
             store_messages=False,
         )
@@ -1977,6 +1992,8 @@ def student_end_chat(
         entry["subjects"] = selected_subjects
     elif not entry.get("subjects"):
         entry["subjects"] = []
+    entry["student_goal"] = normalized_goal_value
+    entry["student_interest"] = normalized_interest_value
     if summary_text:
         entry["summary"] = summary_text
 
@@ -2743,6 +2760,8 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             classroomsState,
             stAssunto,
             stSubthemes,
+            stObjetivo,
+            stInteresses,
         ],
         outputs=[
             viewStudentSetup,
