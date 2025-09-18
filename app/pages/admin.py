@@ -945,7 +945,7 @@ def build_admin_views(
             datatype=["str"] * 6,
             interactive=False,
             wrap=True,
-            height=200,
+             
         )
         with gr.Row():
             adHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)

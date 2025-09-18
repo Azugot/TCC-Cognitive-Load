@@ -749,7 +749,6 @@ def build_teacher_view(
                 datatype=["str"] * 6,
                 interactive=False,
                 wrap=True,
-                height=200,
             )
             with gr.Row():
                 tHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
