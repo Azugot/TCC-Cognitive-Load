@@ -24,6 +24,7 @@ from services.supabase_client import (
     set_classroom_theme_config,
     update_classroom_record,
     update_subject_active,
+    upload_file_to_bucket,
     upsert_classroom_student,
     upsert_classroom_teacher,
 )
@@ -34,6 +35,8 @@ from services.supabase_client import (
 SUPABASE_URL = "https://YOUR_SUPABASE_PROJECT.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "SUPABASE_SERVICE_ROLE_KEY"
 SUPABASE_USERS_TABLE = "users"
+SUPABASE_CHAT_BUCKET = os.getenv("SUPABASE_CHAT_BUCKET", "chat-logs")
+SUPABASE_CHAT_STORAGE_PREFIX = os.getenv("SUPABASE_CHAT_STORAGE_PREFIX", "classrooms")
 
 ROLE_PT_TO_DB = {
     "aluno": "student",
@@ -1754,6 +1757,120 @@ def _student_chat_enable():
     return gr.update(interactive=True)
 
 
+def _sanitize_storage_segment(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text.replace("/", "-")
+
+
+def student_end_chat(history, docsState, authState, currentChatId, chatsState, selectedClass):
+    chat_history = history if isinstance(history, list) else []
+    docs = docsState if isinstance(docsState, dict) else {}
+    chats_map = chatsState if isinstance(chatsState, dict) else {}
+    active_chat_id = currentChatId if isinstance(currentChatId, str) else None
+    storage_chat_id = active_chat_id or _mk_id("chat")
+    pdf_path = None
+
+    def _failure(message: str, warn: bool = False):
+        if warn:
+            gr.Warning(message)
+        else:
+            gr.Error(message)
+        return (
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            chat_history,
+            docs,
+            active_chat_id,
+            chats_map,
+        )
+
+    try:
+        pdf_path = createChatPdf(chat_history, docs)
+    except Exception as exc:  # pragma: no cover - depende de I/O
+        return _failure(f"Erro ao gerar PDF do chat: {exc}")
+
+    student_id = (authState or {}).get("user_id")
+    owner_segment = _normalize_username((authState or {}).get("username")) or "anon"
+    class_segment = _sanitize_storage_segment(selectedClass) or "sem_sala"
+    student_segment = _sanitize_storage_segment(student_id) or owner_segment
+    prefix_segment = _sanitize_storage_segment(SUPABASE_CHAT_STORAGE_PREFIX)
+    filename = f"{storage_chat_id}_{_now_ts()}.pdf"
+    path_parts = [segment for segment in (prefix_segment, class_segment, student_segment) if segment]
+    storage_path = "/".join(path_parts + [filename])
+
+    try:
+        stored_path = upload_file_to_bucket(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            bucket=SUPABASE_CHAT_BUCKET,
+            file_path=pdf_path,
+            storage_path=storage_path,
+            content_type="application/pdf",
+            upsert=True,
+        )
+    except SupabaseConfigurationError:
+        return _failure(
+            "Configure SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e SUPABASE_CHAT_BUCKET para enviar o PDF.",
+            warn=True,
+        )
+    except SupabaseOperationError as exc:
+        return _failure(f"Falha ao enviar PDF para o Storage: {exc}")
+    except Exception as exc:  # pragma: no cover - falhas inesperadas do SDK
+        return _failure(f"Erro inesperado ao enviar PDF: {exc}")
+    finally:
+        if pdf_path and os.path.exists(pdf_path):
+            try:
+                os.remove(pdf_path)
+            except OSError:
+                pass
+
+    entry = chats_map.get(storage_chat_id)
+    if not entry:
+        entry = {
+            "id": storage_chat_id,
+            "owner": owner_segment,
+            "role": _user_role(authState) or "aluno",
+            "created_at": _now_ts(),
+            "messages": chat_history,
+        }
+        chats_map[storage_chat_id] = entry
+
+    entry["classroom_id"] = selectedClass
+    entry["ended_at"] = _now_ts()
+    entry["storage_bucket"] = SUPABASE_CHAT_BUCKET
+    entry["storage_path"] = stored_path
+    attachments = entry.setdefault("attachments", [])
+    attachments.append(
+        {
+            "bucket": SUPABASE_CHAT_BUCKET,
+            "path": stored_path,
+            "type": "pdf",
+        }
+    )
+
+    gr.Info("Chat encerrado! O PDF foi enviado para o Supabase.")
+    print(
+        f"[CHAT] PDF enviado para Storage -> bucket='{SUPABASE_CHAT_BUCKET}' path='{stored_path}' chat='{storage_chat_id}'"
+    )
+
+    return (
+        gr.update(visible=False),
+        gr.update(visible=True),
+        gr.update(visible=True),
+        gr.update(visible=False),
+        [],
+        {},
+        None,
+        chats_map,
+    )
+
+
 # ================================== APP / UI ==================================
 with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     # Estados principais
@@ -2156,8 +2273,10 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
                 with gr.Row():
                     stClear = gr.Button("Limpar chat")
                     stExport = gr.Button("Exportar conversa (PDF)")
-                stBackToSetup = gr.Button(
-                    "⬅️ Voltar para configuração da sala")
+                with gr.Row():
+                    stBackToSetup = gr.Button(
+                        "⬅️ Voltar para configuração da sala")
+                    stEndChat = gr.Button("Encerrar Chat", variant="stop")
                 stChatInput = gr.MultimodalTextbox(
                     show_label=False, placeholder="Digite sua mensagem ou envie um PDF...", sources=["upload"], interactive=True
                 )
@@ -2459,6 +2578,31 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
     stClear.click(clearChat, outputs=stChatbot)
     stExport.click(createChatPdf, inputs=[
                    stChatbot, docsState], outputs=gr.File())
+    stEndChat.click(
+        student_end_chat,
+        inputs=[
+            stChatbot,
+            docsState,
+            authState,
+            currentChatId,
+            chatsState,
+            studentSelectedClass,
+        ],
+        outputs=[
+            viewStudentSetup,
+            viewStudentRooms,
+            stCfgCol,
+            stChatCol,
+            stChatbot,
+            docsState,
+            currentChatId,
+            chatsState,
+        ],
+    ).then(
+        student_rooms_refresh,
+        inputs=[authState, classroomsState, subjectsState],
+        outputs=[stRoomSelect, stRoomInfo, studentSelectedClass],
+    )
     stBackToSetup.click(_student_chat_back_to_setup,
                         outputs=[stCfgCol, stChatCol])
     stSetupBackRooms.click(lambda: (gr.update(visible=False), gr.update(visible=True)),

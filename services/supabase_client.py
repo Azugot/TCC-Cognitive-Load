@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -670,3 +671,80 @@ def reset_cached_client() -> None:
     with _client_lock:
         _cached_client = None
         _client_signature = None
+
+
+def upload_file_to_bucket(
+    url: str,
+    key: str,
+    *,
+    bucket: str,
+    file_path: str,
+    storage_path: str,
+    content_type: Optional[str] = None,
+    upsert: bool = True,
+) -> str:
+    """Upload a file to a Supabase Storage bucket.
+
+    Args:
+        url: Supabase project URL.
+        key: Supabase service role key.
+        bucket: Target storage bucket name.
+        file_path: Absolute path to the file on disk.
+        storage_path: Path (within the bucket) where the file should live.
+        content_type: Optional MIME type (``None`` keeps the default).
+        upsert: Whether to overwrite an existing file with the same path.
+
+    Returns:
+        The path of the stored object inside the bucket.
+
+    Raises:
+        SupabaseConfigurationError: When the Supabase client is not configured.
+        SupabaseOperationError: When validation fails or the upload operation fails.
+    """
+
+    if not bucket or not bucket.strip():
+        raise SupabaseOperationError(
+            "Bucket do Storage não informado para upload."
+        )
+
+    normalized_path = (storage_path or "").strip().lstrip("/")
+    if not normalized_path:
+        raise SupabaseOperationError(
+            "Caminho do arquivo no Storage não informado."
+        )
+
+    if not file_path or not os.path.isfile(file_path):
+        raise SupabaseOperationError(
+            f"Arquivo inexistente para upload: {file_path}"
+        )
+
+    client = _get_client(url, key)
+
+    with open(file_path, "rb") as fh:
+        data = fh.read()
+
+    file_options: Dict[str, Any] = {"upsert": upsert}
+    if content_type:
+        file_options["content-type"] = content_type
+
+    try:
+        response = client.storage.from_(bucket).upload(
+            normalized_path,
+            data,
+            file_options,
+        )
+    except Exception as exc:  # pragma: no cover - depende do SDK/ambiente
+        raise SupabaseOperationError(
+            f"Falha ao enviar arquivo ao bucket '{bucket}': {exc}"
+        ) from exc
+
+    if isinstance(response, dict):
+        stored_path = (
+            response.get("path")
+            or response.get("Key")
+            or normalized_path
+        )
+    else:
+        stored_path = normalized_path
+
+    return stored_path
