@@ -540,7 +540,7 @@ def build_student_views(
     chats_state: gr.State,
     student_selected_class: gr.State,
 ) -> StudentViews:
-    with blocks.Column(visible=False) as viewStudentRooms:
+    with gr.Column(visible=False) as viewStudentRooms:
         gr.Markdown("## 🎒 Minhas Salas")
         with gr.Row():
             stRoomSelect = gr.Dropdown(choices=[], label="Selecione uma sala", value=None)
@@ -550,7 +550,7 @@ def build_student_views(
             stEnterRoomChatSetup = gr.Button("💬 Entrar no chat da sala", variant="primary")
             stRoomsBack = gr.Button("← Voltar à Home")
 
-    with blocks.Column(visible=False) as viewStudentSetup:
+    with gr.Column(visible=False) as viewStudentSetup:
         gr.Markdown("## 🧩 Configurar Chat da Sala")
         with gr.Row():
             stSetupBackRooms = gr.Button("← Voltar às minhas salas")

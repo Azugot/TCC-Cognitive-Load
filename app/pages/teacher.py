@@ -524,7 +524,7 @@ def build_teacher_view(
     subjects_state: gr.State,
     home_view: gr.Column,
 ) -> TeacherView:
-    with blocks.Column(visible=False) as viewTeacher:
+    with gr.Column(visible=False) as viewTeacher:
         gr.Markdown("## 🏫 Gerenciar Salas")
         teacherNotice = gr.Markdown("")
         with gr.Group():

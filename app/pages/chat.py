@@ -184,7 +184,7 @@ def build_studio_page(
     chats_state: gr.State,
 ) -> StudioView:
     """Create the personal chat (studio) interface."""
-    with blocks.Column(visible=False) as viewStudio:
+    with gr.Column(visible=False) as viewStudio:
         with gr.Row():
             gr.Markdown("## 🧩 Customização do Chat")
             btnBackHome = gr.Button("← Voltar à Home")

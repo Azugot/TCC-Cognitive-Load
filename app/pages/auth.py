@@ -66,7 +66,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         )
     header = gr.Markdown(header_msg, elem_id="hdr")
 
-    with blocks.Column(visible=True) as viewLogin:
+    with gr.Column(visible=True) as viewLogin:
         gr.Markdown("## 🔐 Login / Registro")
         authMode = gr.Radio(["Login", "Registrar"], value="Login", label="Modo de acesso")
         with gr.Row():
@@ -82,7 +82,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
             btnRegister = gr.Button("Registrar", visible=False)
         loginMsg = gr.Markdown("")
 
-    with blocks.Column(visible=False) as viewHome:
+    with gr.Column(visible=False) as viewHome:
         homeGreet = gr.Markdown("## 🏠 Home")
         gr.Markdown("Escolha uma opção para continuar:")
         with gr.Row():

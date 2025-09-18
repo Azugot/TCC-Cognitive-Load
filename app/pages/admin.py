@@ -720,7 +720,7 @@ def build_admin_views(
     admin_nav_state: gr.State,
     studio_container: gr.Column,
 ) -> AdminViews:
-    with blocks.Column(visible=False) as viewHomeAdmin:
+    with gr.Column(visible=False) as viewHomeAdmin:
         adminGreet = gr.Markdown("## 🧭 Home do Admin")
         with gr.Row():
             navClassrooms = gr.Button("🏫 Salas")
@@ -738,7 +738,7 @@ def build_admin_views(
                 gr.Markdown("### 👩‍🏫 Área do Professor (demonstração)")
                 btnAdminListStudents = gr.Button("👥 Ver alunos cadastrados")
 
-    with blocks.Column(visible=False) as viewAdminPg:
+    with gr.Column(visible=False) as viewAdminPg:
         gr.Markdown("## 🛠️ Administração (Placeholder)")
         gr.Markdown(
             "- Gerenciar usuários/roles (futuro)\n"
@@ -748,7 +748,7 @@ def build_admin_views(
         with gr.Row():
             adminPgBack = gr.Button("← Voltar à Home do Admin")
 
-    with blocks.Column(visible=False) as viewClassrooms:
+    with gr.Column(visible=False) as viewClassrooms:
         gr.Markdown("## 🏫 Gerenciar Salas")
         with gr.Group():
             with gr.Row():
@@ -797,7 +797,7 @@ def build_admin_views(
         with gr.Row():
             clsBackAdminHome = gr.Button("← Voltar à Home do Admin")
 
-    with blocks.Column(visible=False) as viewHistory:
+    with gr.Column(visible=False) as viewHistory:
         gr.Markdown("## 🗂️ Histórico de Chats")
         with gr.Row():
             histMineOnly = gr.Checkbox(value=False, label="Mostrar apenas meus chats")
@@ -806,7 +806,7 @@ def build_admin_views(
         with gr.Row():
             histBack = gr.Button("← Voltar à Home do Admin")
 
-    with blocks.Column(visible=False) as viewEvaluate:
+    with gr.Column(visible=False) as viewEvaluate:
         gr.Markdown("## 📝 Avaliar Chats")
         with gr.Row():
             evalChatId = gr.Dropdown(choices=[], label="Chat para avaliar", value=None)
@@ -820,7 +820,7 @@ def build_admin_views(
         with gr.Row():
             evalBack = gr.Button("← Voltar à Home do Admin")
 
-    with blocks.Column(visible=False) as viewProgress:
+    with gr.Column(visible=False) as viewProgress:
         gr.Markdown("## 📊 Progresso e Relatórios")
         with gr.Row():
             progMineOnly = gr.Checkbox(value=False, label="Restringir aos meus chats")
