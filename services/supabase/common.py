@@ -490,7 +490,7 @@ def fetch_latest_auto_evaluations(
     try:
         response = (
             client.table("automated_chat_evaluations")
-            .select("id,chat_id,bot_evaluations,created_at")
+            .select("id,chat_id,bot_evaluation,created_at")
             .in_("chat_id", cleaned)
             .order("created_at", desc=True)
             .execute()
@@ -506,7 +506,7 @@ def fetch_latest_auto_evaluations(
         chat_id = row.get("chat_id")
         if not chat_id or chat_id in results:
             continue
-        payload = _ensure_dict(row.get("bot_evaluations"))
+        payload = _ensure_dict(row.get("bot_evaluation"))
         text_value = payload.get("text") or payload.get("evaluation") or payload.get("content")
         if isinstance(text_value, dict):
             text_value = json.dumps(text_value, ensure_ascii=False)
@@ -639,7 +639,7 @@ def record_auto_chat_evaluation(
         except (TypeError, ValueError):
             pass
 
-    record = {"chat_id": chat_id, "bot_evaluations": payload}
+    record = {"chat_id": chat_id, "bot_evaluation": payload}
 
     try:
         response = client.table("automated_chat_evaluations").insert(record).execute()
@@ -649,7 +649,7 @@ def record_auto_chat_evaluation(
         raise SupabaseOperationError(str(exc)) from exc
 
     row = response.data[0] if response.data else record
-    stored_payload = _ensure_dict(row.get("bot_evaluations")) or payload
+    stored_payload = _ensure_dict(row.get("bot_evaluation")) or payload
     text_value = stored_payload.get("text") or ""
     try:
         score_value = float(stored_payload.get("score")) if stored_payload.get("score") is not None else None

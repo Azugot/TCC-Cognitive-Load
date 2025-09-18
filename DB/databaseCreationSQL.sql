@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS public.chat_evaluations (
 CREATE TABLE IF NOT EXISTS public.automated_chat_evaluations (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   chat_id         uuid NOT NULL REFERENCES public.chats(id) ON DELETE CASCADE,
-  bot_evaluations jsonb NOT NULL,
+  bot_evaluation jsonb NOT NULL,
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 
