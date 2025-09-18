@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import mimetypes
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -49,6 +50,33 @@ def _is_placeholder(value: str) -> bool:
 
 def _normalize_login(login: str) -> str:
     return (login or "").strip().lower()
+
+
+def _normalize_timestamp(value: Any) -> Optional[str]:
+    """Convert assorted timestamp inputs to an ISO-8601 UTC string."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt.isoformat()
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _get_client(url: str, key: str) -> Client:
@@ -749,3 +777,105 @@ def upload_file_to_bucket(
         stored_path = normalized_path
 
     return stored_path
+
+
+def create_chat_record(
+    url: str,
+    key: str,
+    *,
+    student_id: str,
+    classroom_id: str,
+    started_at: Any,
+    ended_at: Any,
+    chat_history: Optional[List[Dict[str, Any]]] = None,
+    storage_chat_id: Optional[str] = None,
+    storage_path_id: Optional[str] = None,
+    storage_bucket: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    chat_title: Optional[str] = None,
+    subject_id: Optional[str] = None,
+    subject_free_text: Optional[str] = None,
+    topic_source: Optional[str] = None,
+    summary: Optional[str] = None,
+    subject_titles: Optional[List[str]] = None,
+    student_goal: Optional[str] = None,
+    student_interest: Optional[str] = None,
+    is_adhoc_chat: bool = False,
+    store_messages: bool = False,
+    chats_table: str = "chats",
+    chat_messages_table: str = "chat_messages",
+) -> Dict[str, Any]:
+    """Persist a chat session and its history on Supabase."""
+
+    if not student_id:
+        raise SupabaseOperationError("Identificador do aluno ausente para registrar chat.")
+    if not classroom_id:
+        raise SupabaseOperationError("Identificador da sala ausente para registrar chat.")
+
+    storage_identifier = storage_path_id or storage_chat_id
+
+    content_payload: Dict[str, Any] = {}
+    if storage_identifier:
+        content_payload["storage_path_id"] = storage_identifier
+    if storage_bucket:
+        content_payload["bucket"] = storage_bucket
+    if storage_path:
+        content_payload["path"] = storage_path
+    if subject_titles:
+        filtered_subjects = [
+            str(title).strip()
+            for title in (subject_titles or [])
+            if isinstance(title, str) and str(title).strip()
+        ]
+        if filtered_subjects:
+            content_payload["subjects"] = filtered_subjects
+    if is_adhoc_chat and chat_title:
+        content_payload["title"] = chat_title
+
+    def _normalize_optional_text(value: Optional[str]) -> str:
+        if value is None:
+            return "None"
+        text = str(value).strip()
+        return text if text else "None"
+
+    content_payload["student_goal"] = _normalize_optional_text(student_goal)
+    content_payload["student_interest"] = _normalize_optional_text(
+        student_interest
+    )
+
+    started_iso = _normalize_timestamp(started_at)
+    ended_iso = _normalize_timestamp(ended_at)
+    if not started_iso:
+        started_iso = datetime.now(timezone.utc).isoformat()
+
+    payload: Dict[str, Any] = {
+        "student_id": student_id,
+        "classroom_id": classroom_id,
+        "topic_source": (topic_source or "").strip(),
+        "started_at": started_iso,
+    }
+    if ended_iso:
+        payload["ended_at"] = ended_iso
+    if subject_id:
+        payload["subject_id"] = subject_id
+    if subject_free_text is not None:
+        payload["subject_free_text"] = str(subject_free_text).strip()
+    if summary:
+        payload["summary"] = summary
+    if content_payload:
+        payload["content"] = content_payload
+
+    client = _get_client(url, key)
+    try:
+        response = client.table(chats_table).insert(payload).execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    chat_rows = response.data or []
+    chat_record = chat_rows[0] if chat_rows else payload
+
+    result: Dict[str, Any] = {"chat": chat_record}
+
+    return result
