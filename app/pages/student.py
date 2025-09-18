@@ -15,6 +15,7 @@ from services.supabase_client import (
     SupabaseConfigurationError,
     SupabaseOperationError,
     create_chat_record,
+    list_student_chats,
     upload_file_to_bucket,
 )
 from services.vertex_client import VERTEX_CFG, _vertex_err, summarize_chat_history
@@ -24,8 +25,15 @@ from app.config import (
     SUPABASE_CHAT_STORAGE_PREFIX,
     SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_URL,
+    SUPABASE_USERS_TABLE,
 )
 from app.pages.chat import addMessage, bot, clearChat
+from app.pages.history_shared import (
+    _format_timestamp,
+    _history_table_data,
+    load_chat_entry,
+    prepare_download,
+)
 from app.utils import (
     _get_class_by_id,
     _mk_id,
@@ -62,6 +70,124 @@ class StudentViews:
     end_chat_button: gr.Button
     chat_input: gr.MultimodalTextbox
     setup_back_button: gr.Button
+    history_class_dropdown: gr.Dropdown
+    history_refresh_button: gr.Button
+    history_info: gr.Markdown
+    history_table: gr.Dataframe
+    history_chat_dropdown: gr.Dropdown
+    history_load_button: gr.Button
+    history_metadata: gr.Markdown
+    history_preview: gr.Textbox
+    history_download_button: gr.DownloadButton
+    history_evaluation: gr.Textbox
+    history_comments: gr.Markdown
+    history_notice: gr.Markdown
+
+
+def _student_history_dropdown(auth, classrooms, current_value=None):
+    classes = _student_classes(auth, classrooms or [])
+    choices = [(c["name"], c["id"]) for c in classes if c.get("id")]
+    valid_ids = [value for _, value in choices]
+    value = current_value if current_value in valid_ids else (valid_ids[0] if valid_ids else None)
+    return gr.update(choices=choices, value=value)
+
+
+def student_history_dropdown(auth, classrooms, current_value=None):
+    return _student_history_dropdown(auth, classrooms, current_value)
+
+
+def student_history_refresh(auth, classroom_filter):
+    student_id = (auth or {}).get("user_id")
+    if not student_id:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            "⚠️ Faça login como aluno para consultar seus chats.",
+            None,
+        )
+
+    try:
+        chats = list_student_chats(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            student_id=student_id,
+            users_table=SUPABASE_USERS_TABLE,
+        )
+    except SupabaseConfigurationError:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            "⚠️ Configure o Supabase para carregar o histórico de chats.",
+            None,
+        )
+    except SupabaseOperationError as err:
+        return (
+            gr.update(value=[]),
+            [],
+            gr.update(choices=[], value=None),
+            f"❌ Erro ao consultar chats: {err}",
+            None,
+        )
+
+    classroom_filter = (classroom_filter or "").strip()
+    if classroom_filter:
+        filtered = [chat for chat in chats if str(chat.get("classroom_id")) == classroom_filter]
+    else:
+        filtered = chats
+
+    table = _history_table_data(filtered)
+    dropdown_choices = []
+    for chat in filtered:
+        chat_id = chat.get("id")
+        if not chat_id:
+            continue
+        classroom = chat.get("classroom_name") or chat.get("classroom_id") or "Sala"
+        started = _format_timestamp(chat.get("started_at"))
+        dropdown_choices.append((f"{classroom} — {started}", chat_id))
+
+    default_id = dropdown_choices[0][1] if dropdown_choices else None
+    message = (
+        f"✅ {len(filtered)} chat(s) encontrados." if filtered else "ℹ️ Nenhum chat para o filtro selecionado."
+    )
+    return (
+        gr.update(value=table),
+        filtered,
+        gr.update(choices=dropdown_choices, value=default_id),
+        message,
+        default_id,
+    )
+
+
+def student_history_load_chat(chat_id, history_entries, current_download_path):
+    result = load_chat_entry(chat_id, history_entries, current_download_path)
+
+    if result.notice:
+        if result.notice.startswith("❌"):
+            gr.Error(result.notice)
+        else:
+            gr.Warning(result.notice)
+
+    return (
+        result.chat_id,
+        gr.update(value=result.metadata_md),
+        gr.update(value=result.preview_text),
+        gr.update(value=result.evaluation_text),
+        gr.update(value=result.comments_md),
+        result.transcript_text,
+        result.download_path,
+        gr.update(visible=result.download_visible),
+        gr.update(value=result.notice or ""),
+    )
+
+
+def student_history_prepare_download(download_path):
+    path = prepare_download(download_path)
+    if path:
+        return path
+    gr.Warning("⚠️ Nenhum arquivo disponível para download.")
+    return None
 
 
 def _student_classes(auth: Optional[Dict[str, Any]], classrooms: Iterable[Dict[str, Any]]):
@@ -540,6 +666,11 @@ def build_student_views(
     chats_state: gr.State,
     student_selected_class: gr.State,
 ) -> StudentViews:
+    student_history_state = gr.State([])
+    student_history_selected = gr.State(None)
+    student_history_transcript = gr.State("")
+    student_download_path = gr.State(None)
+
     with gr.Column(visible=False) as viewStudentRooms:
         gr.Markdown("## 🎒 Minhas Salas")
         with gr.Row():
@@ -549,6 +680,43 @@ def build_student_views(
         with gr.Row():
             stEnterRoomChatSetup = gr.Button("💬 Entrar no chat da sala", variant="primary")
             stRoomsBack = gr.Button("← Voltar à Home")
+        with gr.Accordion("Histórico de Chats", open=False):
+            with gr.Row():
+                stHistoryClass = gr.Dropdown(choices=[], label="Sala", value=None)
+                stHistoryRefresh = gr.Button("🔄 Atualizar histórico")
+            stHistoryInfo = gr.Markdown("Selecione uma sala ou atualize para ver seus chats.")
+            stHistoryTable = gr.Dataframe(
+                headers=[
+                    "Aluno",
+                    "Sala",
+                    "Assuntos",
+                    "Resumo",
+                    "Nota",
+                    "Iniciado em",
+                ],
+                datatype=["str"] * 6,
+                interactive=False,
+                wrap=True,
+            )
+            with gr.Row():
+                stHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
+                stHistoryLoad = gr.Button("📄 Ver detalhes")
+            stHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
+            stHistoryPreview = gr.Textbox(
+                label="Prévia do PDF", lines=10, interactive=False, value=""
+            )
+            with gr.Row():
+                stHistoryDownload = gr.DownloadButton(
+                    "⬇️ Baixar PDF", visible=False, variant="secondary"
+                )
+            stHistoryEvaluation = gr.Textbox(
+                label="Avaliação automática (professores)",
+                lines=4,
+                interactive=False,
+                value="",
+            )
+            stHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
+            stHistoryNotice = gr.Markdown("")
 
     with gr.Column(visible=False) as viewStudentSetup:
         gr.Markdown("## 🧩 Configurar Chat da Sala")
@@ -592,6 +760,10 @@ def build_student_views(
         student_rooms_refresh,
         inputs=[auth_state, classrooms_state, subjects_state],
         outputs=[stRoomSelect, stRoomInfo, student_selected_class],
+    ).then(
+        student_history_dropdown,
+        inputs=[auth_state, classrooms_state, stHistoryClass],
+        outputs=stHistoryClass,
     )
 
     stRoomSelect.change(
@@ -680,6 +852,34 @@ def build_student_views(
         student_rooms_refresh,
         inputs=[auth_state, classrooms_state, subjects_state],
         outputs=[stRoomSelect, stRoomInfo, student_selected_class],
+    ).then(
+        student_history_dropdown,
+        inputs=[auth_state, classrooms_state, stHistoryClass],
+        outputs=stHistoryClass,
+    ).then(
+        student_history_refresh,
+        inputs=[auth_state, stHistoryClass],
+        outputs=[
+            stHistoryTable,
+            student_history_state,
+            stHistoryChat,
+            stHistoryInfo,
+            student_history_selected,
+        ],
+    ).then(
+        student_history_load_chat,
+        inputs=[student_history_selected, student_history_state, student_download_path],
+        outputs=[
+            student_history_selected,
+            stHistoryMetadata,
+            stHistoryPreview,
+            stHistoryEvaluation,
+            stHistoryComments,
+            student_history_transcript,
+            student_download_path,
+            stHistoryDownload,
+            stHistoryNotice,
+        ],
     )
 
     stBackToSetup.click(_student_chat_back_to_setup, outputs=[stCfgCol, stChatCol])
@@ -687,6 +887,96 @@ def build_student_views(
         lambda: (gr.update(visible=False), gr.update(visible=True)),
         inputs=None,
         outputs=[viewStudentSetup, viewStudentRooms],
+    )
+
+    stHistoryRefresh.click(
+        student_history_refresh,
+        inputs=[auth_state, stHistoryClass],
+        outputs=[
+            stHistoryTable,
+            student_history_state,
+            stHistoryChat,
+            stHistoryInfo,
+            student_history_selected,
+        ],
+    ).then(
+        student_history_load_chat,
+        inputs=[student_history_selected, student_history_state, student_download_path],
+        outputs=[
+            student_history_selected,
+            stHistoryMetadata,
+            stHistoryPreview,
+            stHistoryEvaluation,
+            stHistoryComments,
+            student_history_transcript,
+            student_download_path,
+            stHistoryDownload,
+            stHistoryNotice,
+        ],
+    )
+
+    stHistoryClass.change(
+        student_history_refresh,
+        inputs=[auth_state, stHistoryClass],
+        outputs=[
+            stHistoryTable,
+            student_history_state,
+            stHistoryChat,
+            stHistoryInfo,
+            student_history_selected,
+        ],
+    ).then(
+        student_history_load_chat,
+        inputs=[student_history_selected, student_history_state, student_download_path],
+        outputs=[
+            student_history_selected,
+            stHistoryMetadata,
+            stHistoryPreview,
+            stHistoryEvaluation,
+            stHistoryComments,
+            student_history_transcript,
+            student_download_path,
+            stHistoryDownload,
+            stHistoryNotice,
+        ],
+    )
+
+    stHistoryChat.change(
+        student_history_load_chat,
+        inputs=[stHistoryChat, student_history_state, student_download_path],
+        outputs=[
+            student_history_selected,
+            stHistoryMetadata,
+            stHistoryPreview,
+            stHistoryEvaluation,
+            stHistoryComments,
+            student_history_transcript,
+            student_download_path,
+            stHistoryDownload,
+            stHistoryNotice,
+        ],
+    )
+
+    stHistoryLoad.click(
+        student_history_load_chat,
+        inputs=[stHistoryChat, student_history_state, student_download_path],
+        outputs=[
+            student_history_selected,
+            stHistoryMetadata,
+            stHistoryPreview,
+            stHistoryEvaluation,
+            stHistoryComments,
+            student_history_transcript,
+            student_download_path,
+            stHistoryDownload,
+            stHistoryNotice,
+        ],
+    )
+
+    stHistoryDownload.click(
+        student_history_prepare_download,
+        inputs=[student_download_path],
+        outputs=stHistoryDownload,
     )
 
     return StudentViews(
@@ -714,6 +1004,18 @@ def build_student_views(
         end_chat_button=stEndChat,
         chat_input=stChatInput,
         setup_back_button=stSetupBackRooms,
+        history_class_dropdown=stHistoryClass,
+        history_refresh_button=stHistoryRefresh,
+        history_info=stHistoryInfo,
+        history_table=stHistoryTable,
+        history_chat_dropdown=stHistoryChat,
+        history_load_button=stHistoryLoad,
+        history_metadata=stHistoryMetadata,
+        history_preview=stHistoryPreview,
+        history_download_button=stHistoryDownload,
+        history_evaluation=stHistoryEvaluation,
+        history_comments=stHistoryComments,
+        history_notice=stHistoryNotice,
     )
 
 
@@ -728,6 +1030,10 @@ __all__ = [
     "student_apply_setup",
     "student_end_chat",
     "student_setup_from_class",
+    "student_history_dropdown",
+    "student_history_refresh",
+    "student_history_load_chat",
+    "student_history_prepare_download",
     "_student_chat_back_to_setup",
     "_student_chat_enable",
     "_render_progress_md",

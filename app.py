@@ -23,6 +23,7 @@ from app.pages.chat import build_studio_page
 from app.pages.student import (
     StudentViews,
     build_student_views,
+    student_history_dropdown,
     student_go_rooms,
     student_rooms_back,
     student_rooms_refresh,
@@ -129,6 +130,10 @@ def build_app() -> gr.Blocks:
                 student_views.rooms_info,
                 student_selected_class,
             ],
+        ).then(
+            student_history_dropdown,
+            inputs=[auth_state, classrooms_state, student_views.history_class_dropdown],
+            outputs=student_views.history_class_dropdown,
         )
 
         student_views.rooms_back_button.click(
