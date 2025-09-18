@@ -4,7 +4,12 @@ import uuid
 import time
 import gradio as gr
 
-from services.vertex_client import VERTEX_CFG, _vertex_err, _streamFromVertex
+from services.vertex_client import (
+    VERTEX_CFG,
+    _vertex_err,
+    _streamFromVertex,
+    summarize_chat_history,
+)
 from services.auth_store import _hashPw
 from services.docs import extractPdfText, createChatPdf
 from services.script_builder import buildCustomScript
@@ -1774,6 +1779,7 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
     active_chat_id = currentChatId if isinstance(currentChatId, str) else None
     storage_chat_id = active_chat_id or _mk_id("chat")
     pdf_path = None
+    summary_text = ""
 
     def _failure(message: str, warn: bool = False):
         if warn:
@@ -1827,6 +1833,13 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
         if first_user_msg:
             chat_title = first_user_msg[:80]
 
+    if chat_history and VERTEX_CFG and not _vertex_err:
+        try:
+            summary_text = summarize_chat_history(chat_history, VERTEX_CFG, max_phrases=2)
+        except Exception as exc:  # pragma: no cover - depende de chamadas externas
+            summary_text = ""
+            gr.Warning(f"Não foi possível gerar resumo do chat: {exc}")
+
     try:
         pdf_path = createChatPdf(chat_history, docs)
     except Exception as exc:  # pragma: no cover - depende de I/O
@@ -1874,6 +1887,7 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
             storage_bucket=SUPABASE_CHAT_BUCKET,
             storage_path=stored_path,
             chat_title=chat_title,
+            summary=summary_text or None,
             store_messages=True,
         )
     except SupabaseConfigurationError:
@@ -1909,6 +1923,8 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
     entry["ended_at"] = ended_ts
     entry["storage_bucket"] = SUPABASE_CHAT_BUCKET
     entry["storage_path"] = stored_path
+    if summary_text:
+        entry["summary"] = summary_text
 
     supabase_chat = None
     supabase_messages = None
