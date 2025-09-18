@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
+import mimetypes
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from postgrest.exceptions import APIError
@@ -703,47 +704,47 @@ def upload_file_to_bucket(
     """
 
     if not bucket or not bucket.strip():
-        raise SupabaseOperationError(
-            "Bucket do Storage não informado para upload."
-        )
+        raise SupabaseOperationError("Bucket do Storage não informado para upload.")
 
     normalized_path = (storage_path or "").strip().lstrip("/")
     if not normalized_path:
-        raise SupabaseOperationError(
-            "Caminho do arquivo no Storage não informado."
-        )
+        raise SupabaseOperationError("Caminho do arquivo no Storage não informado.")
 
     if not file_path or not os.path.isfile(file_path):
-        raise SupabaseOperationError(
-            f"Arquivo inexistente para upload: {file_path}"
-        )
+        raise SupabaseOperationError(f"Arquivo inexistente para upload: {file_path}")
 
-    client = _get_client(url, key)
+    client: Client = _get_client(url, key)  # sua função existente
 
-    with open(file_path, "rb") as fh:
-        data = fh.read()
+    # Defina o content-type corretamente (lowercase na chave)
+    if not content_type:
+        guessed, _ = mimetypes.guess_type(file_path)
+        content_type = guessed or "application/octet-stream"
 
-    file_options: Dict[str, Any] = {"upsert": upsert}
-    if content_type:
-        file_options["content-type"] = content_type
+    # >>> O PONTO CRÍTICO: valores de headers como strings
+    file_options: Dict[str, Any] = {
+        "upsert": "true" if upsert else "false",   # NÃO bool
+        "content-type": content_type,              # chave em lowercase
+        # opcional: "cache-control": "3600"
+    }
 
+    # Use argumentos nomeados para evitar ordem errada
     try:
-        response = client.storage.from_(bucket).upload(
-            normalized_path,
-            data,
-            file_options,
-        )
-    except Exception as exc:  # pragma: no cover - depende do SDK/ambiente
-        raise SupabaseOperationError(
-            f"Falha ao enviar arquivo ao bucket '{bucket}': {exc}"
-        ) from exc
+        with open(file_path, "rb") as fh:
+            data = fh.read()
 
-    if isinstance(response, dict):
-        stored_path = (
-            response.get("path")
-            or response.get("Key")
-            or normalized_path
+        resp = client.storage.from_(bucket).upload(
+            path=normalized_path,
+            file=data,
+            file_options=file_options,
         )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(f"Falha ao enviar arquivo ao bucket '{bucket}': {exc}") from exc
+
+    # O SDK pode retornar dict ou objeto; normalize
+    if isinstance(resp, dict):
+        stored_path = resp.get("path") or resp.get("Key") or normalized_path
     else:
         stored_path = normalized_path
 
