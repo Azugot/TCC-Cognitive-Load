@@ -1772,7 +1772,17 @@ def _sanitize_storage_segment(value):
     return text.replace("/", "-")
 
 
-def student_end_chat(history, docsState, authState, currentChatId, chatsState, selectedClass):
+def student_end_chat(
+    history,
+    docsState,
+    authState,
+    currentChatId,
+    chatsState,
+    selectedClass,
+    classrooms,
+    selectedTheme,
+    selectedSubjects,
+):
     chat_history = history if isinstance(history, list) else []
     docs = docsState if isinstance(docsState, dict) else {}
     chats_map = chatsState if isinstance(chatsState, dict) else {}
@@ -1780,6 +1790,15 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
     storage_chat_id = active_chat_id or _mk_id("chat")
     pdf_path = None
     summary_text = ""
+    classrooms_list = classrooms if isinstance(classrooms, list) else []
+    selected_theme_text = (selectedTheme or "") if isinstance(selectedTheme, str) else ""
+    if selected_theme_text:
+        selected_theme_text = selected_theme_text.strip()
+    selected_subjects = []
+    if isinstance(selectedSubjects, (list, tuple, set)):
+        for item in selectedSubjects:
+            if isinstance(item, str) and item.strip():
+                selected_subjects.append(item.strip())
 
     def _failure(message: str, warn: bool = False):
         if warn:
@@ -1800,8 +1819,11 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
     student_id = (authState or {}).get("user_id")
     if not student_id:
         return _failure("⚠️ Não foi possível identificar o aluno logado.", warn=True)
-    if not selectedClass:
-        return _failure("⚠️ Selecione uma sala antes de encerrar o chat.", warn=True)
+    is_class_chat = bool(selectedClass)
+    if not is_class_chat and not selected_theme_text:
+        return _failure(
+            "⚠️ Informe um tema para registrar o chat independente.", warn=True
+        )
 
     owner_segment = _normalize_username((authState or {}).get("username")) or "anon"
     class_segment = _sanitize_storage_segment(selectedClass) or "sem_sala"
@@ -1832,6 +1854,24 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
         )
         if first_user_msg:
             chat_title = first_user_msg[:80]
+
+    classroom_theme = None
+    if is_class_chat:
+        for classroom in classrooms_list:
+            if isinstance(classroom, dict) and classroom.get("id") == selectedClass:
+                classroom_theme = (
+                    classroom.get("theme_name")
+                    or classroom.get("name")
+                    or classroom.get("title")
+                )
+                break
+
+    topic_value = (classroom_theme or selected_theme_text or chat_title or "").strip()
+    subject_free_text_value = "NONE" if is_class_chat else (topic_value or "Adhoc")
+    if not topic_value:
+        topic_value = "Indefinido"
+    if not subject_free_text_value:
+        subject_free_text_value = "Adhoc"
 
     if chat_history and VERTEX_CFG and not _vertex_err:
         try:
@@ -1884,11 +1924,16 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
             ended_at=ended_ts,
             chat_history=chat_history,
             storage_chat_id=storage_chat_id,
+            storage_path_id=storage_chat_id,
             storage_bucket=SUPABASE_CHAT_BUCKET,
             storage_path=stored_path,
             chat_title=chat_title,
+            subject_free_text=subject_free_text_value,
+            topic_source=topic_value,
             summary=summary_text or None,
-            store_messages=True,
+            subject_titles=selected_subjects,
+            is_adhoc_chat=not is_class_chat,
+            store_messages=False,
         )
     except SupabaseConfigurationError:
         return _failure(
@@ -1923,6 +1968,15 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
     entry["ended_at"] = ended_ts
     entry["storage_bucket"] = SUPABASE_CHAT_BUCKET
     entry["storage_path"] = stored_path
+    entry["storage_path_id"] = storage_chat_id
+    entry["topic_source"] = topic_value
+    entry["subject_free_text"] = subject_free_text_value
+    if classroom_theme:
+        entry["classroom_theme"] = classroom_theme
+    if selected_subjects:
+        entry["subjects"] = selected_subjects
+    elif not entry.get("subjects"):
+        entry["subjects"] = []
     if summary_text:
         entry["summary"] = summary_text
 
@@ -2686,6 +2740,9 @@ with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
             currentChatId,
             chatsState,
             studentSelectedClass,
+            classroomsState,
+            stAssunto,
+            stSubthemes,
         ],
         outputs=[
             viewStudentSetup,
