@@ -12,6 +12,7 @@ from services.supabase_client import (
     SupabaseConfigurationError,
     SupabaseOperationError,
     SupabaseUserExistsError,
+    create_chat_record,
     create_classroom_record,
     create_user_record,
     create_subject_record,
@@ -1790,12 +1791,12 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
             chats_map,
         )
 
-    try:
-        pdf_path = createChatPdf(chat_history, docs)
-    except Exception as exc:  # pragma: no cover - depende de I/O
-        return _failure(f"Erro ao gerar PDF do chat: {exc}")
-
     student_id = (authState or {}).get("user_id")
+    if not student_id:
+        return _failure("⚠️ Não foi possível identificar o aluno logado.", warn=True)
+    if not selectedClass:
+        return _failure("⚠️ Selecione uma sala antes de encerrar o chat.", warn=True)
+
     owner_segment = _normalize_username((authState or {}).get("username")) or "anon"
     class_segment = _sanitize_storage_segment(selectedClass) or "sem_sala"
     student_segment = _sanitize_storage_segment(student_id) or owner_segment
@@ -1803,6 +1804,33 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
     filename = f"{storage_chat_id}_{_now_ts()}.pdf"
     path_parts = [segment for segment in (prefix_segment, class_segment, student_segment) if segment]
     storage_path = "/".join(path_parts + [filename])
+
+    entry = chats_map.get(storage_chat_id) if isinstance(chats_map, dict) else None
+    created_at_ts = None
+    if isinstance(entry, dict):
+        created_val = entry.get("created_at")
+        if isinstance(created_val, (int, float)):
+            created_at_ts = int(created_val)
+
+    chat_title = entry.get("title") if isinstance(entry, dict) else None
+    if not chat_title:
+        first_user_msg = next(
+            (
+                str(msg.get("content"))
+                for msg in chat_history
+                if isinstance(msg, dict)
+                and (msg.get("role") or "").lower() == "user"
+                and msg.get("content")
+            ),
+            None,
+        )
+        if first_user_msg:
+            chat_title = first_user_msg[:80]
+
+    try:
+        pdf_path = createChatPdf(chat_history, docs)
+    except Exception as exc:  # pragma: no cover - depende de I/O
+        return _failure(f"Erro ao gerar PDF do chat: {exc}")
 
     try:
         stored_path = upload_file_to_bucket(
@@ -1830,21 +1858,73 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
             except OSError:
                 pass
 
-    entry = chats_map.get(storage_chat_id)
-    if not entry:
+    ended_ts = _now_ts()
+    started_ts = created_at_ts or ended_ts
+
+    try:
+        supabase_payload = create_chat_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            student_id=student_id,
+            classroom_id=selectedClass,
+            started_at=started_ts,
+            ended_at=ended_ts,
+            chat_history=chat_history,
+            storage_chat_id=storage_chat_id,
+            storage_bucket=SUPABASE_CHAT_BUCKET,
+            storage_path=stored_path,
+            chat_title=chat_title,
+            store_messages=True,
+        )
+    except SupabaseConfigurationError:
+        return _failure(
+            "Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para registrar o chat.",
+            warn=True,
+        )
+    except SupabaseOperationError as exc:
+        return _failure(f"Falha ao registrar chat no Supabase: {exc}")
+    except Exception as exc:  # pragma: no cover - falhas inesperadas do SDK
+        return _failure(f"Erro inesperado ao registrar chat no Supabase: {exc}")
+
+    if not isinstance(entry, dict):
         entry = {
             "id": storage_chat_id,
             "owner": owner_segment,
             "role": _user_role(authState) or "aluno",
-            "created_at": _now_ts(),
+            "created_at": started_ts,
             "messages": chat_history,
         }
         chats_map[storage_chat_id] = entry
+    else:
+        entry["messages"] = chat_history
+        if not isinstance(entry.get("created_at"), (int, float)):
+            entry["created_at"] = started_ts
+
+    if chat_title and not entry.get("title"):
+        entry["title"] = chat_title
 
     entry["classroom_id"] = selectedClass
-    entry["ended_at"] = _now_ts()
+    entry["student_id"] = student_id
+    entry["started_at"] = started_ts
+    entry["ended_at"] = ended_ts
     entry["storage_bucket"] = SUPABASE_CHAT_BUCKET
     entry["storage_path"] = stored_path
+
+    supabase_chat = None
+    supabase_messages = None
+    if isinstance(supabase_payload, dict):
+        supabase_chat = supabase_payload.get("chat")
+        supabase_messages = supabase_payload.get("messages")
+        if not supabase_chat and supabase_payload.get("id"):
+            supabase_chat = supabase_payload
+
+    if supabase_chat:
+        entry["supabase_chat_id"] = supabase_chat.get("id")
+        entry["supabase_chat_record"] = supabase_chat
+    if supabase_messages:
+        entry["supabase_chat_messages"] = supabase_messages
+    entry["supabase_synced_at"] = ended_ts
+
     attachments = entry.setdefault("attachments", [])
     attachments.append(
         {
@@ -1854,9 +1934,11 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
         }
     )
 
-    gr.Info("Chat encerrado! O PDF foi enviado para o Supabase.")
+    gr.Info("Chat encerrado! O PDF foi enviado e o registro foi salvo no Supabase.")
+    supabase_chat_id = entry.get("supabase_chat_id")
+    supabase_tag = f" supabase_id='{supabase_chat_id}'" if supabase_chat_id else ""
     print(
-        f"[CHAT] PDF enviado para Storage -> bucket='{SUPABASE_CHAT_BUCKET}' path='{stored_path}' chat='{storage_chat_id}'"
+        f"[CHAT] PDF enviado para Storage -> bucket='{SUPABASE_CHAT_BUCKET}' path='{stored_path}' chat='{storage_chat_id}'{supabase_tag}"
     )
 
     return (
@@ -1869,6 +1951,7 @@ def student_end_chat(history, docsState, authState, currentChatId, chatsState, s
         None,
         chats_map,
     )
+
 
 
 # ================================== APP / UI ==================================
