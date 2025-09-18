@@ -13,26 +13,17 @@ from services.vertex_client import (
 from services.auth_store import _hashPw
 from services.docs import extractPdfText, createChatPdf
 from services.script_builder import buildCustomScript
-from services.supabase_client import (
+from services.supabase import admin as supabase_admin
+from services.supabase import storage as supabase_storage
+from services.supabase import student as supabase_student
+from services.supabase import teacher as supabase_teacher
+from services.supabase.common import (
     SupabaseConfigurationError,
     SupabaseOperationError,
     SupabaseUserExistsError,
-    create_chat_record,
-    create_classroom_record,
     create_user_record,
-    create_subject_record,
-    delete_classroom_record,
-    fetch_classroom_domain,
     fetch_user_record,
     fetch_users_by_role,
-    remove_classroom_student,
-    remove_classroom_teacher,
-    set_classroom_theme_config,
-    update_classroom_record,
-    update_subject_active,
-    upload_file_to_bucket,
-    upsert_classroom_student,
-    upsert_classroom_teacher,
 )
 
 # ======================== Configuração Supabase ========================
@@ -380,7 +371,7 @@ def _student_subtheme_choices(cls_id, subjects_by_class):
 # ----- Domain state sync -----
 def _load_domain_state(current_classrooms=None, current_subjects=None):
     try:
-        raw_classrooms, raw_subjects = fetch_classroom_domain(
+        raw_classrooms, raw_subjects = supabase_admin.fetch_classroom_domain(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             users_table=SUPABASE_USERS_TABLE,
@@ -802,7 +793,7 @@ def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
         return classrooms, subjects, md, dd1, dd2
 
     try:
-        created = create_classroom_record(
+        created = supabase_admin.create_classroom_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             name=name,
@@ -826,7 +817,7 @@ def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
     classroom_id = (created or {}).get("id")
     if role == "professor" and classroom_id and creator_id:
         try:
-            upsert_classroom_teacher(
+            supabase_admin.upsert_classroom_teacher(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
                 classroom_id=classroom_id,
@@ -878,7 +869,7 @@ def save_cls(cls_id, name, theme, desc, locked, archived, classrooms, subjects):
     }
 
     try:
-        update_classroom_record(
+        supabase_admin.update_classroom_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             cls_id,
@@ -911,7 +902,7 @@ def delete_cls(cls_id, classrooms, subjects):
         return classrooms, subjects, md
 
     try:
-        delete_classroom_record(
+        supabase_admin.delete_classroom_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             cls_id,
@@ -982,7 +973,7 @@ def add_teacher(cls_id, uname, classrooms, subjects, auth):
         role_label = "owner"
 
     try:
-        upsert_classroom_teacher(
+        supabase_admin.upsert_classroom_teacher(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1027,7 +1018,7 @@ def add_student(cls_id, uname, classrooms, subjects):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     try:
-        upsert_classroom_student(
+        supabase_admin.upsert_classroom_student(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1075,7 +1066,7 @@ def remove_member(cls_id, uname, classrooms, subjects):
 
     status_messages = []
     try:
-        remove_classroom_teacher(
+        supabase_admin.remove_classroom_teacher(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1091,7 +1082,7 @@ def remove_member(cls_id, uname, classrooms, subjects):
         status_messages.append(f"Professor: {err}")
 
     try:
-        remove_classroom_student(
+        supabase_admin.remove_classroom_student(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1177,7 +1168,7 @@ def teacher_save_params(
     }
 
     try:
-        set_classroom_theme_config(
+        supabase_teacher.set_classroom_theme_config(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1245,7 +1236,7 @@ def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
         role_label = "owner"
 
     try:
-        upsert_classroom_teacher(
+        supabase_admin.upsert_classroom_teacher(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1298,7 +1289,7 @@ def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth)
 
     description = (desc or "").strip() or ""
     try:
-        created = create_classroom_record(
+        created = supabase_admin.create_classroom_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             name=name,
@@ -1322,7 +1313,7 @@ def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth)
     classroom_id = (created or {}).get("id")
     if _is_teacher(auth) and me and creator_id and classroom_id:
         try:
-            upsert_classroom_teacher(
+            supabase_admin.upsert_classroom_teacher(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
                 classroom_id=classroom_id,
@@ -1378,7 +1369,7 @@ def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     try:
-        upsert_classroom_student(
+        supabase_admin.upsert_classroom_student(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1434,7 +1425,7 @@ def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     try:
-        remove_classroom_student(
+        supabase_admin.remove_classroom_student(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1476,7 +1467,7 @@ def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
 
     creator_id = _auth_user_id(auth) or ""
     try:
-        create_subject_record(
+        supabase_admin.create_subject_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=selected_id,
@@ -1518,7 +1509,7 @@ def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classroo
             if not subject_id:
                 continue
             desired_active = subject.get("name") in actives_set
-            update_subject_active(
+            supabase_admin.update_subject_active(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
                 subject_id=subject_id,
@@ -1593,7 +1584,7 @@ def admin_add_subject(cls_id, subj, subjects_by_class, classrooms, auth):
 
     creator_id = _auth_user_id(auth) or ""
     try:
-        create_subject_record(
+        supabase_admin.create_subject_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=cls_id,
@@ -1643,7 +1634,7 @@ def admin_apply_active(cls_id, actives, subjects_by_class, classrooms):
             subject_id = entry.get("id")
             if not subject_id:
                 continue
-            update_subject_active(
+            supabase_admin.update_subject_active(
                 SUPABASE_URL,
                 SUPABASE_SERVICE_ROLE_KEY,
                 subject_id=subject_id,
@@ -1899,7 +1890,7 @@ def student_end_chat(
         return _failure(f"Erro ao gerar PDF do chat: {exc}")
 
     try:
-        stored_path = upload_file_to_bucket(
+        stored_path = supabase_storage.upload_file_to_bucket(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             bucket=SUPABASE_CHAT_BUCKET,
@@ -1928,7 +1919,7 @@ def student_end_chat(
     started_ts = created_at_ts or ended_ts
 
     try:
-        supabase_payload = create_chat_record(
+        supabase_payload = supabase_student.create_chat_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             student_id=student_id,
