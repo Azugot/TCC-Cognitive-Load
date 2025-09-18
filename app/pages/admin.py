@@ -1,0 +1,1038 @@
+"""Admin area utilities and Gradio view builders."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+import gradio as gr
+
+from services.supabase_client import (
+    SupabaseConfigurationError,
+    SupabaseOperationError,
+    create_classroom_record,
+    create_subject_record,
+    delete_classroom_record,
+    fetch_classroom_domain,
+    remove_classroom_student,
+    remove_classroom_teacher,
+    set_classroom_theme_config,
+    update_classroom_record,
+    update_subject_active,
+    upsert_classroom_student,
+    upsert_classroom_teacher,
+)
+
+from app.config import (
+    ROLE_PT_TO_DB,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+    SUPABASE_USERS_TABLE,
+)
+from app.utils import (
+    _auth_user_id,
+    _get_class_by_id,
+    _is_admin,
+    _merge_notice,
+    _normalize_username,
+    _student_username,
+    _teacher_username,
+)
+
+
+@dataclass
+class AdminViews:
+    home: gr.Column
+    admin_page: gr.Column
+    classrooms: gr.Column
+    history: gr.Column
+    evaluate: gr.Column
+    progress: gr.Column
+    btn_logout: gr.Button
+    btn_admin_as_student: gr.Button
+    btn_admin_list_students: gr.Button
+
+
+def _render_classrooms_md(classrooms: Iterable[Dict[str, Any]]):
+    if not classrooms:
+        return "⚠️ Nenhuma sala cadastrada ainda."
+    lines = ["### Salas cadastradas\n"]
+    for c in classrooms:
+        status = "arquivada" if c.get("is_archived") else "ativa"
+        lock = "🔒" if c.get("theme_locked") else "🔓"
+        members = c.get("members", {"teachers": [], "students": []})
+        tcount = len(members.get("teachers", []))
+        scount = len(members.get("students", []))
+        lines.append(
+            f"- **{c['name']}** ({status}) — tema: _{c.get('theme_name', '?')}_ {lock} — id: `{c['id']}` — 👩‍🏫 {tcount} | 🎓 {scount}"
+        )
+    return "\n".join(lines)
+
+
+def _render_subjects_md(subjects_by_class, selected_id, classrooms):
+    if not classrooms:
+        return "⚠️ Cadastre uma sala primeiro."
+    if not selected_id:
+        return "ℹ️ Selecione uma sala para gerenciar os subtemas."
+    names = {c["id"]: c["name"] for c in classrooms}
+    subjects = subjects_by_class.get(selected_id, [])
+    title = f"### Subtemas da sala **{names.get(selected_id, '?')}**\n"
+    if not subjects:
+        return title + "⚠️ Nenhum subtema cadastrado."
+    bullets = []
+    for s in subjects:
+        mark = "✅" if s.get("active") else "⏸️"
+        bullets.append(f"- {mark} {s['name']}")
+    return title + "\n".join(bullets)
+
+
+def _render_history_md(chats_map, owner=None):
+    if not chats_map:
+        return "⚠️ Ainda não há conversas."
+    rows = []
+    for cid, chat in chats_map.items():
+        if owner and chat.get("owner") != owner:
+            continue
+        ts = chat.get("created_at")
+        score = chat.get("score")
+        title = chat.get("title") or cid
+        tag = f" (nota: {score})" if score is not None else ""
+        rows.append(
+            f"- **{title}** — id: `{cid}` — autor: `{chat.get('owner')}` — {time.strftime('%d/%m %H:%M', time.localtime(ts))}{tag}"
+        )
+    return "### Conversas registradas\n" + ("\n".join(rows) if rows else "⚠️ Nenhuma conversa para o filtro aplicado.")
+
+
+def _render_eval_md(chat):
+    if not chat:
+        return "⚠️ Selecione um chat para avaliar."
+    prev = []
+    if chat.get("score") is not None:
+        prev.append(f"- Nota atual: **{chat['score']}**")
+    if chat.get("rubric"):
+        prev.append(f"- Rubrica: {chat['rubric']}")
+    if chat.get("feedback"):
+        prev.append(f"- Feedback: {chat['feedback']}")
+    return "### Avaliação atual\n" + ("\n".join(prev) if prev else "Sem avaliação registrada.")
+
+
+def _load_domain_state(current_classrooms=None, current_subjects=None):
+    try:
+        raw_classrooms, raw_subjects = fetch_classroom_domain(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            users_table=SUPABASE_USERS_TABLE,
+        )
+    except SupabaseConfigurationError:
+        warn = "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar as salas."
+        return current_classrooms or [], current_subjects or {}, warn
+    except SupabaseOperationError as err:
+        warn = f"❌ Erro ao consultar salas: {err}"
+        return current_classrooms or [], current_subjects or {}, warn
+
+    normalized_classrooms = []
+    for item in raw_classrooms:
+        teachers = {
+            _normalize_username(entry.get("login"))
+            for entry in item.get("teachers", [])
+            if entry.get("login")
+        }
+        students = {
+            _normalize_username(entry.get("login"))
+            for entry in item.get("students", [])
+            if entry.get("login")
+            and str(entry.get("status", "active")).lower() == "active"
+        }
+        owner_login = _normalize_username(item.get("owner_login"))
+        if owner_login:
+            teachers.add(owner_login)
+        normalized_classrooms.append(
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "description": item.get("description") or "",
+                "theme_name": item.get("theme_name") or item.get("name"),
+                "theme_config": item.get("theme_config") or {},
+                "theme_locked": bool(item.get("theme_locked")),
+                "is_archived": bool(item.get("is_archived")),
+                "members": {
+                    "teachers": sorted(t for t in teachers if t),
+                    "students": sorted(students),
+                },
+                "owner": owner_login,
+                "owner_id": item.get("owner_id"),
+            }
+        )
+
+    normalized_classrooms.sort(key=lambda cls: (cls.get("name") or "").lower())
+
+    normalized_subjects = {}
+    for cid, entries in raw_subjects.items():
+        normalized_subjects[cid] = [
+            {
+                "id": entry.get("id"),
+                "name": entry.get("name"),
+                "active": bool(entry.get("is_active", True)),
+            }
+            for entry in entries
+        ]
+        normalized_subjects[cid].sort(key=lambda item: (item.get("name") or "").lower())
+
+    return normalized_classrooms, normalized_subjects, ""
+
+
+def _refresh_states(current_classrooms=None, current_subjects=None):
+    classrooms, subjects, notice = _load_domain_state(current_classrooms, current_subjects)
+    return classrooms, subjects, notice
+
+
+def _sync_domain_after_auth(auth, classrooms, subjects):
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    if notice:
+        print(f"[SUPABASE] {notice}")
+    return classes, subjects_map
+
+
+def _admin_classrooms_outputs(classrooms, notice=""):
+    md = _render_classrooms_md(classrooms or [])
+    md = _merge_notice(md, notice)
+    dd1, dd2 = _refresh_cls_dropdown(classrooms or [])
+    return md, dd1, dd2
+
+
+def _refresh_cls_dropdown(classrooms):
+    choices = [(c["name"], c["id"]) for c in (classrooms or [])]
+    return gr.update(choices=choices), gr.update(choices=choices)
+
+
+def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
+    role = (auth or {}).get("role")
+    if (role or "").lower() not in ("admin", "professor"):
+        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, "⛔ Apenas professores ou admins podem criar salas.")
+        return classrooms, subjects, md, dd1, dd2
+
+    creator_id = _auth_user_id(auth)
+    if not creator_id:
+        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, "⚠️ Faça login para criar salas.")
+        return classrooms, subjects, md, dd1, dd2
+
+    name = (name or "").strip()
+    theme = (theme or "").strip() or name
+    description = (desc or "").strip() or ""
+    if not name:
+        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, "⚠️ Informe um nome para a sala.")
+        return classrooms, subjects, md, dd1, dd2
+
+    try:
+        created = create_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            name=name,
+            description=description,
+            theme_name=theme,
+            theme_locked=bool(locked),
+            created_by=creator_id,
+        )
+    except SupabaseConfigurationError:
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
+        )
+        return classrooms, subjects, md, dd1, dd2
+    except SupabaseOperationError as err:
+        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, f"❌ Erro ao criar sala: {err}")
+        return classrooms, subjects, md, dd1, dd2
+
+    classroom_id = (created or {}).get("id")
+    if role and role.lower() == "professor" and classroom_id and creator_id:
+        try:
+            upsert_classroom_teacher(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                classroom_id=classroom_id,
+                teacher_id=creator_id,
+                role_label="owner",
+            )
+        except SupabaseConfigurationError:
+            pass
+        except SupabaseOperationError as err:
+            print(f"[SUPABASE] Falha ao registrar professor responsável: {err}")
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md, dd1, dd2 = _admin_classrooms_outputs(classes, notice or "✅ Sala criada.")
+    return classes, subjects_map, md, dd1, dd2
+
+
+def refresh_classrooms(classrooms, subjects):
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md, dd1, dd2 = _admin_classrooms_outputs(classes, notice)
+    return classes, subjects_map, md, dd1, dd2
+
+
+def load_cls_for_edit(cls_id, classrooms):
+    c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
+    if not c:
+        return (
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(value=True),
+            gr.update(value=False),
+            "⚠️ Sala não encontrada.",
+        )
+    return (
+        gr.update(value=c["name"]),
+        gr.update(value=c["theme_name"]),
+        gr.update(value=c["description"]),
+        gr.update(value=c["theme_locked"]),
+        gr.update(value=c["is_archived"]),
+        "",
+    )
+
+
+def save_cls(cls_id, name, theme, desc, locked, archived, classrooms, subjects):
+    if not cls_id:
+        md = _merge_notice(_render_classrooms_md(classrooms or []), "⚠️ Selecione uma sala.")
+        return classrooms, subjects, md
+
+    original = next((c for c in (classrooms or []) if c.get("id") == cls_id), None)
+    if not original:
+        md = _merge_notice(_render_classrooms_md(classrooms or []), "⚠️ Sala não encontrada.")
+        return classrooms, subjects, md
+
+    payload = {
+        "name": (name or "").strip() or original.get("name"),
+        "theme_name": (theme or "").strip() or original.get("theme_name"),
+        "description": (desc or "").strip() or "",
+        "theme_locked": bool(locked),
+        "is_archived": bool(archived),
+    }
+
+    try:
+        update_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            cls_id,
+            **payload,
+        )
+    except SupabaseConfigurationError:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para atualizar salas.",
+        )
+        return classrooms, subjects, md
+    except SupabaseOperationError as err:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            f"❌ Erro ao atualizar sala: {err}",
+        )
+        return classrooms, subjects, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(_render_classrooms_md(classes), notice or "✅ Sala atualizada.")
+    return classes, subjects_map, md
+
+
+def delete_cls(cls_id, classrooms, subjects):
+    if not cls_id:
+        md = _merge_notice(_render_classrooms_md(classrooms or []), "⚠️ Selecione uma sala.")
+        return classrooms, subjects, md
+
+    try:
+        delete_classroom_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            cls_id,
+        )
+    except SupabaseConfigurationError:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para excluir salas.",
+        )
+        return classrooms, subjects, md
+    except SupabaseOperationError as err:
+        md = _merge_notice(
+            _render_classrooms_md(classrooms or []),
+            f"❌ Erro ao excluir sala: {err}",
+        )
+        return classrooms, subjects, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(_render_classrooms_md(classes), notice or "✅ Sala excluída.")
+    return classes, subjects_map, md
+
+
+def _render_members_md(cls_id, classrooms):
+    c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
+    if not c:
+        return "⚠️ Selecione uma sala."
+    teachers = ", ".join(c["members"]["teachers"]) or "—"
+    students = ", ".join(c["members"]["students"]) or "—"
+    return (
+        f"### Membros da sala `{c['name']}`\n"
+        f"- 👩‍🏫 Professores ({len(c['members']['teachers'])}): {teachers}\n"
+        f"- 🎓 Alunos ({len(c['members']['students'])}): {students}"
+    )
+
+
+def add_teacher(cls_id, uname, classrooms, subjects, auth):
+    if not cls_id or not uname:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+    uname_norm = _normalize_username(uname)
+    me = _teacher_username(auth)
+    classroom = _get_class_by_id(classrooms, cls_id)
+    if not classroom:
+        return classrooms, subjects, "⚠️ Sala não encontrada."
+
+    normalized = [_normalize_username(t) for t in classroom["members"]["teachers"]]
+    if me not in normalized and not _is_admin(auth):
+        return classrooms, subjects, "⛔ Você não é professor desta sala."
+
+    owner = _normalize_username(classroom.get("owner"))
+    if owner and me != owner and not _is_admin(auth):
+        return classrooms, subjects, "⛔ Apenas o professor responsável por esta sala pode adicionar outros professores."
+
+    try:
+        from services.supabase_client import fetch_user_record
+
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores."
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    role_label = None
+    if not owner and me:
+        role_label = "owner"
+
+    try:
+        upsert_classroom_teacher(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            teacher_id=record.id,
+            role_label=role_label,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar professores."
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao adicionar professor: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(_render_members_md(cls_id, classes), notice or "✅ Professor adicionado.")
+    return classes, subjects_map, md
+
+
+def add_student(cls_id, uname, classrooms, subjects):
+    if not cls_id or not uname:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+    classroom = _get_class_by_id(classrooms, cls_id)
+    if not classroom:
+        return classrooms, subjects, "⚠️ Sala não encontrada."
+
+    uname_norm = _normalize_username(uname)
+    try:
+        from services.supabase_client import fetch_user_record
+
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos."
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    try:
+        upsert_classroom_student(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            student_id=record.id,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar alunos."
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao adicionar aluno: {err}"
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    md = _merge_notice(_render_members_md(cls_id, classes), notice or "✅ Aluno adicionado.")
+    return classes, subjects_map, md
+
+
+def remove_member(cls_id, uname, classrooms, subjects):
+    if not cls_id or not uname:
+        return classrooms, subjects, "⚠️ Informe sala e username."
+    uname_norm = _normalize_username(uname)
+    try:
+        from services.supabase_client import fetch_user_record
+
+        record = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname_norm,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes."
+    except SupabaseOperationError as err:
+        return classrooms, subjects, f"❌ Erro ao buscar usuário: {err}"
+
+    if not record or not record.id:
+        return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    status_messages: List[str] = []
+    try:
+        remove_classroom_teacher(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            teacher_id=record.id,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes."
+    except SupabaseOperationError as err:
+        status_messages.append(f"Professor: {err}")
+
+    try:
+        remove_classroom_student(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            student_id=record.id,
+        )
+    except SupabaseConfigurationError:
+        return classrooms, subjects, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar integrantes."
+    except SupabaseOperationError as err:
+        status_messages.append(f"Aluno: {err}")
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects)
+    base_md = _render_members_md(cls_id, classes)
+    message = "⚠️ " + "; ".join(status_messages) if status_messages else "✅ Usuário removido."
+    result = _merge_notice(base_md, message)
+    result = _merge_notice(result, notice)
+    return classes, subjects_map, result
+
+
+def _admin_subjects_ui(classrooms, subjects_by_class, selected_id, notice=""):
+    chk = gr.update(choices=[], value=[])
+    md = _render_subjects_md(subjects_by_class, selected_id, classrooms or [])
+    if selected_id:
+        lst = list(subjects_by_class.get(selected_id, []))
+        names = [s.get("name") for s in lst]
+        active = [s.get("name") for s in lst if s.get("active")]
+        chk = gr.update(choices=names, value=active)
+    md = _merge_notice(md, notice)
+    return chk, md
+
+
+def admin_refresh_subjects(classrooms, subjects_by_class, selected_id):
+    return _admin_subjects_ui(classrooms, subjects_by_class, selected_id)
+
+
+def admin_add_subject(cls_id, subj, subjects_by_class, classrooms, auth):
+    if not cls_id:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            None,
+            "ℹ️ Selecione uma sala para adicionar subtemas.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    subj_name = (subj or "").strip()
+    if not subj_name:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Informe o nome do subtema.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    existing = list(subjects_by_class.get(cls_id, []))
+    if any(s.get("name", "").lower() == subj_name.lower() for s in existing):
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Esse subtema já existe.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    creator_id = _auth_user_id(auth) or ""
+    try:
+        create_subject_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=cls_id,
+            name=subj_name,
+            created_by=creator_id,
+        )
+    except SupabaseConfigurationError:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
+        )
+        return classrooms, subjects_by_class, chk, md
+    except SupabaseOperationError as err:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            f"❌ Erro ao adicionar subtema: {err}",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    chk, md = _admin_subjects_ui(classes, subjects_map, cls_id, notice or "✅ Subtema adicionado.")
+    return classes, subjects_map, chk, md
+
+
+def admin_apply_active(cls_id, actives, subjects_by_class, classrooms):
+    if not cls_id:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            None,
+            "⚠️ Selecione uma sala.",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    lst = list(subjects_by_class.get(cls_id, []))
+    names = set(actives or [])
+    try:
+        for entry in lst:
+            subject_id = entry.get("id")
+            if not subject_id:
+                continue
+            update_subject_active(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                subject_id=subject_id,
+                is_active=entry.get("name") in names,
+            )
+    except SupabaseConfigurationError:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para gerenciar subtemas.",
+        )
+        return classrooms, subjects_by_class, chk, md
+    except SupabaseOperationError as err:
+        chk, md = _admin_subjects_ui(
+            classrooms,
+            subjects_by_class,
+            cls_id,
+            f"❌ Erro ao atualizar subtemas: {err}",
+        )
+        return classrooms, subjects_by_class, chk, md
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    chk, md = _admin_subjects_ui(classes, subjects_map, cls_id, notice or "✅ Subtemas atualizados.")
+    return classes, subjects_map, chk, md
+
+
+def refresh_history(chats_map, mine_only, auth):
+    user = (auth or {}).get("username")
+    return _render_history_md(chats_map, owner=user if mine_only else None)
+
+
+def eval_refresh_dropdown(chats_map):
+    ids = []
+    for cid, chat in (chats_map or {}).items():
+        if any(m for m in chat["messages"] if m["role"] == "user"):
+            ids.append((chat.get("title") or cid, cid))
+    default_val = ids[0][1] if ids else None
+    return gr.update(choices=ids, value=default_val)
+
+
+def eval_load(chat_id, chats_map=None):
+    print(f"[EVAL] eval_load: chat_id={chat_id!r} has_map={bool(chats_map)}")
+    if not chat_id:
+        return "ℹ️ Selecione um chat para visualizar/avaliar."
+    chat = (chats_map or {}).get(chat_id)
+    return _render_eval_md(chat)
+
+
+def eval_save(chat_id, score, rubric, feedback, chats_map):
+    if not chat_id or chat_id not in (chats_map or {}):
+        return chats_map, "⚠️ Selecione um chat válido."
+    cm = chats_map[chat_id]
+    cm["score"] = int(score) if score is not None else None
+    cm["rubric"] = (rubric or "").strip() or None
+    cm["feedback"] = (feedback or "").strip() or None
+    return chats_map, "✅ Avaliação salva."
+
+
+def refresh_progress(chats_map, mine_only, auth):
+    from app.pages.student import _render_progress_md  # delayed import to avoid cycle
+
+    user = (auth or {}).get("username")
+    return _render_progress_md(chats_map, user_filter=user if mine_only else None)
+
+
+def _go_admin(page):
+    vis = {
+        "home": (True, False, False, False, False, False),
+        "classrooms": (False, True, False, False, False, False),
+        "history": (False, False, True, False, False, False),
+        "evaluate": (False, False, False, True, False, False),
+        "progress": (False, False, False, False, True, False),
+        "admin": (False, False, False, False, False, True),
+    }.get(page, (True, False, False, False, False, False))
+    (homeV, clsV, histV, evalV, progV, admV) = vis
+    return (
+        {"page": page},
+        gr.update(visible=homeV),
+        gr.update(visible=clsV),
+        gr.update(visible=histV),
+        gr.update(visible=evalV),
+        gr.update(visible=progV),
+        gr.update(visible=admV),
+    )
+
+
+def build_admin_views(
+    *,
+    blocks: gr.Blocks,
+    auth_state: gr.State,
+    classrooms_state: gr.State,
+    subjects_state: gr.State,
+    chats_state: gr.State,
+    admin_nav_state: gr.State,
+    studio_container: gr.Column,
+) -> AdminViews:
+    with blocks.Column(visible=False) as viewHomeAdmin:
+        adminGreet = gr.Markdown("## 🧭 Home do Admin")
+        with gr.Row():
+            navClassrooms = gr.Button("🏫 Salas")
+            navHistory = gr.Button("🗂️ Histórico")
+            navEvaluate = gr.Button("📝 Avaliação")
+            navProgress = gr.Button("📊 Progresso")
+            navAdmin = gr.Button("🛠️ Administração")
+            btnLogoutAdmin = gr.Button("Sair")
+        gr.Markdown("---\n#### Áreas disponíveis dentro da Home do Admin\n")
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### 🎓 Área do Aluno (demonstração)")
+                btnAdminAsStudent = gr.Button("⚙️ Abrir Personalização do Chat (Aluno)")
+            with gr.Column():
+                gr.Markdown("### 👩‍🏫 Área do Professor (demonstração)")
+                btnAdminListStudents = gr.Button("👥 Ver alunos cadastrados")
+
+    with blocks.Column(visible=False) as viewAdminPg:
+        gr.Markdown("## 🛠️ Administração (Placeholder)")
+        gr.Markdown(
+            "- Gerenciar usuários/roles (futuro)\n"
+            "- Parâmetros globais do sistema (futuro)\n"
+            "- Logs/telemetria (futuro)\n"
+        )
+        with gr.Row():
+            adminPgBack = gr.Button("← Voltar à Home do Admin")
+
+    with blocks.Column(visible=False) as viewClassrooms:
+        gr.Markdown("## 🏫 Gerenciar Salas")
+        with gr.Group():
+            with gr.Row():
+                clsName = gr.Textbox(label="Nome da sala", placeholder="Ex.: Algoritmos e Estruturas de Dados")
+                clsTheme = gr.Textbox(label="Tema (exibição)", placeholder="Ex.: Algoritmos e ED")
+            clsDesc = gr.Textbox(label="Descrição (opcional)")
+            with gr.Row():
+                clsLocked = gr.Checkbox(value=True, label="Tema travado")
+                btnAddClass = gr.Button("➕ Criar sala", variant="primary")
+        with gr.Accordion("Editar/Arquivar/Excluir", open=False):
+            with gr.Row():
+                clsSelect = gr.Dropdown(choices=[], label="Selecione a sala", value=None)
+                btnRefreshCls = gr.Button("🔄")
+            with gr.Row():
+                eName = gr.Textbox(label="Nome")
+                eTheme = gr.Textbox(label="Tema")
+            eDesc = gr.Textbox(label="Descrição")
+            with gr.Row():
+                eLocked = gr.Checkbox(value=True, label="Tema travado")
+                eArchived = gr.Checkbox(value=False, label="Arquivada")
+            with gr.Row():
+                btnSaveCls = gr.Button("💾 Salvar alterações", variant="primary")
+                btnDeleteCls = gr.Button("🗑️ Excluir sala", variant="stop")
+        with gr.Accordion("Membros (Professores/Alunos)", open=False):
+            with gr.Row():
+                membClass = gr.Dropdown(choices=[], label="Sala", value=None)
+            with gr.Row():
+                addTeacher = gr.Textbox(label="Adicionar professor (username)")
+                btnAddTeacher = gr.Button("👩‍🏫 Adicionar")
+            with gr.Row():
+                addStudent = gr.Textbox(label="Adicionar aluno (username)")
+                btnAddStudent = gr.Button("🎓 Adicionar")
+            with gr.Row():
+                rmUser = gr.Textbox(label="Remover usuário (username)")
+                btnRmUser = gr.Button("🗑️ Remover")
+            membersMd = gr.Markdown("")
+        with gr.Accordion("Subtemas da sala", open=False):
+            with gr.Row():
+                clsSubjName = gr.Textbox(label="Novo subtema", placeholder="Ex.: Ponteiros")
+                btnClsAddSubj = gr.Button("➕ Adicionar subtema")
+            with gr.Row():
+                clsActiveList = gr.CheckboxGroup(choices=[], label="Ativar/desativar subtemas", value=[])
+                btnClsApplyActive = gr.Button("✅ Aplicar ativações")
+            clsSubjectsMd = gr.Markdown("")
+        classroomsMd = gr.Markdown("")
+        with gr.Row():
+            clsBackAdminHome = gr.Button("← Voltar à Home do Admin")
+
+    with blocks.Column(visible=False) as viewHistory:
+        gr.Markdown("## 🗂️ Histórico de Chats")
+        with gr.Row():
+            histMineOnly = gr.Checkbox(value=False, label="Mostrar apenas meus chats")
+            btnHistoryRefresh = gr.Button("🔄 Atualizar")
+        historyMd = gr.Markdown("")
+        with gr.Row():
+            histBack = gr.Button("← Voltar à Home do Admin")
+
+    with blocks.Column(visible=False) as viewEvaluate:
+        gr.Markdown("## 📝 Avaliar Chats")
+        with gr.Row():
+            evalChatId = gr.Dropdown(choices=[], label="Chat para avaliar", value=None)
+            btnEvalRefresh = gr.Button("🔄")
+        evalCurrent = gr.Markdown("")
+        with gr.Row():
+            evalScore = gr.Slider(0, 10, value=8, step=1, label="Nota")
+            evalRubric = gr.Textbox(label="Rubrica (curta)", placeholder="Ex.: Clareza, Correção, Raciocínio")
+        evalFeedback = gr.Textbox(label="Feedback para o aluno", placeholder="Escreva um comentário objetivo")
+        btnSaveEval = gr.Button("💾 Salvar avaliação", variant="primary")
+        with gr.Row():
+            evalBack = gr.Button("← Voltar à Home do Admin")
+
+    with blocks.Column(visible=False) as viewProgress:
+        gr.Markdown("## 📊 Progresso e Relatórios")
+        with gr.Row():
+            progMineOnly = gr.Checkbox(value=False, label="Restringir aos meus chats")
+            btnProgRefresh = gr.Button("🔄 Atualizar")
+        progressMd = gr.Markdown("")
+        with gr.Row():
+            progBack = gr.Button("← Voltar à Home do Admin")
+
+    navClassrooms.click(
+        lambda: _go_admin("classrooms"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+    navHistory.click(
+        lambda: _go_admin("history"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+    navEvaluate.click(
+        lambda: _go_admin("evaluate"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+    navProgress.click(
+        lambda: _go_admin("progress"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+    navAdmin.click(
+        lambda: _go_admin("admin"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    adminPgBack.click(
+        lambda: _go_admin("home"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    btnAddClass.click(
+        add_classroom,
+        inputs=[clsName, clsTheme, clsDesc, clsLocked, classrooms_state, subjects_state, auth_state],
+        outputs=[classrooms_state, subjects_state, classroomsMd, clsSelect, membClass],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classrooms_state, subjects_state, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
+
+    btnRefreshCls.click(
+        refresh_classrooms,
+        inputs=[classrooms_state, subjects_state],
+        outputs=[classrooms_state, subjects_state, classroomsMd, clsSelect, membClass],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classrooms_state, subjects_state, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
+
+    clsSelect.change(
+        load_cls_for_edit,
+        inputs=[clsSelect, classrooms_state],
+        outputs=[eName, eTheme, eDesc, eLocked, eArchived, classroomsMd],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classrooms_state, subjects_state, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
+
+    btnSaveCls.click(
+        save_cls,
+        inputs=[clsSelect, eName, eTheme, eDesc, eLocked, eArchived, classrooms_state, subjects_state],
+        outputs=[classrooms_state, subjects_state, classroomsMd],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classrooms_state, subjects_state, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
+
+    btnDeleteCls.click(
+        delete_cls,
+        inputs=[clsSelect, classrooms_state, subjects_state],
+        outputs=[classrooms_state, subjects_state, classroomsMd],
+    ).then(
+        admin_refresh_subjects,
+        inputs=[classrooms_state, subjects_state, clsSelect],
+        outputs=[clsActiveList, clsSubjectsMd],
+    )
+
+    membClass.change(
+        lambda cid, cls: _render_members_md(cid, cls),
+        inputs=[membClass, classrooms_state],
+        outputs=[membersMd],
+    )
+
+    btnAddTeacher.click(
+        add_teacher,
+        inputs=[membClass, addTeacher, classrooms_state, subjects_state, auth_state],
+        outputs=[classrooms_state, subjects_state, membersMd],
+    )
+
+    btnAddStudent.click(
+        add_student,
+        inputs=[membClass, addStudent, classrooms_state, subjects_state],
+        outputs=[classrooms_state, subjects_state, membersMd],
+    )
+
+    btnRmUser.click(
+        remove_member,
+        inputs=[membClass, rmUser, classrooms_state, subjects_state],
+        outputs=[classrooms_state, subjects_state, membersMd],
+    )
+
+    btnClsAddSubj.click(
+        admin_add_subject,
+        inputs=[clsSelect, clsSubjName, subjects_state, classrooms_state, auth_state],
+        outputs=[classrooms_state, subjects_state, clsActiveList, clsSubjectsMd],
+    )
+
+    btnClsApplyActive.click(
+        admin_apply_active,
+        inputs=[clsSelect, clsActiveList, subjects_state, classrooms_state],
+        outputs=[classrooms_state, subjects_state, clsSubjectsMd],
+    )
+
+    clsBackAdminHome.click(
+        lambda: _go_admin("home"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    btnHistoryRefresh.click(
+        refresh_history,
+        inputs=[chats_state, histMineOnly, auth_state],
+        outputs=[historyMd],
+    )
+
+    histBack.click(
+        lambda: _go_admin("home"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    btnEvalRefresh.click(
+        eval_refresh_dropdown,
+        inputs=[chats_state],
+        outputs=[evalChatId],
+    )
+
+    evalChatId.change(
+        eval_load,
+        inputs=[evalChatId, chats_state],
+        outputs=[evalCurrent],
+    )
+
+    btnSaveEval.click(
+        eval_save,
+        inputs=[evalChatId, evalScore, evalRubric, evalFeedback, chats_state],
+        outputs=[chats_state, evalCurrent],
+    )
+
+    evalBack.click(
+        lambda: _go_admin("home"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    btnProgRefresh.click(
+        refresh_progress,
+        inputs=[chats_state, progMineOnly, auth_state],
+        outputs=[progressMd],
+    )
+
+    progBack.click(
+        lambda: _go_admin("home"),
+        outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    btnAdminAsStudent.click(
+        lambda: (gr.update(visible=False), gr.update(visible=True)),
+        inputs=None,
+        outputs=[viewHomeAdmin, studio_container],
+    )
+
+    return AdminViews(
+        home=viewHomeAdmin,
+        admin_page=viewAdminPg,
+        classrooms=viewClassrooms,
+        history=viewHistory,
+        evaluate=viewEvaluate,
+        progress=viewProgress,
+        btn_logout=btnLogoutAdmin,
+        btn_admin_as_student=btnAdminAsStudent,
+        btn_admin_list_students=btnAdminListStudents,
+    )
+
+
+__all__ = [
+    "AdminViews",
+    "build_admin_views",
+    "_render_classrooms_md",
+    "_render_subjects_md",
+    "_render_history_md",
+    "_render_eval_md",
+    "_refresh_states",
+    "_sync_domain_after_auth",
+    "add_classroom",
+    "refresh_classrooms",
+    "load_cls_for_edit",
+    "save_cls",
+    "delete_cls",
+    "add_teacher",
+    "add_student",
+    "remove_member",
+    "admin_refresh_subjects",
+    "admin_add_subject",
+    "admin_apply_active",
+    "refresh_history",
+    "eval_refresh_dropdown",
+    "eval_load",
+    "eval_save",
+    "refresh_progress",
+]

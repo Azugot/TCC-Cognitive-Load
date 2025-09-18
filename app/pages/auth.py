@@ -1,0 +1,351 @@
+"""Authentication helpers and shared navigation views."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import gradio as gr
+
+from services.auth_store import _hashPw
+from services.supabase_client import (
+    SupabaseConfigurationError,
+    SupabaseOperationError,
+    SupabaseUserExistsError,
+    create_user_record,
+    fetch_user_record,
+    fetch_users_by_role,
+)
+
+from app.config import (
+    ROLE_DB_TO_PT,
+    ROLE_PT_TO_DB,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+    SUPABASE_USERS_TABLE,
+)
+
+
+@dataclass
+class AuthViews:
+    header: gr.Markdown
+    view_login: gr.Column
+    view_home: gr.Column
+    auth_mode: gr.Radio
+    username: gr.Textbox
+    password: gr.Textbox
+    email: gr.Textbox
+    full_name: gr.Textbox
+    role_radio: gr.Radio
+    register_row: gr.Row
+    register_role_row: gr.Row
+    btn_login: gr.Button
+    btn_register: gr.Button
+    login_msg: gr.Markdown
+    home_greet: gr.Markdown
+    btn_go_customize: gr.Button
+    btn_logout_home: gr.Button
+    student_row: gr.Row
+    btn_student_rooms: gr.Button
+    teacher_row: gr.Row
+    btn_view_students: gr.Button
+    btn_teacher_classrooms: gr.Button
+    students_out: gr.Markdown
+
+
+def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_err: Optional[str]) -> AuthViews:
+    """Create header, login and shared home sections."""
+    header_msg = "### 👋 Bem-vindo! Faça login para continuar."
+    if vertex_err:
+        header_msg += f"\n\n> **Atenção**: {vertex_err}"
+    else:
+        header_msg += (
+            f"\n\n> ✅ Credenciais Vertex carregadas de: `{(vertex_cfg or {}).get('source_path', '?')}`"
+            f" | Projeto: `{(vertex_cfg or {}).get('project', '?')}` | Região: `{(vertex_cfg or {}).get('location', '?')}`"
+            f" | Modelo: `{(vertex_cfg or {}).get('model', '?')}`"
+        )
+    header = gr.Markdown(header_msg, elem_id="hdr")
+
+    with blocks.Column(visible=True) as viewLogin:
+        gr.Markdown("## 🔐 Login / Registro")
+        authMode = gr.Radio(["Login", "Registrar"], value="Login", label="Modo de acesso")
+        with gr.Row():
+            username = gr.Textbox(label="Usuário", placeholder="ex: augusto")
+            password = gr.Textbox(label="Senha", type="password", placeholder="••••••••")
+        with gr.Row(visible=False) as registerRow:
+            email = gr.Textbox(label="E-mail", placeholder="ex: nome@dominio.com")
+            fullName = gr.Textbox(label="Nome completo", placeholder="ex: Maria Silva")
+        with gr.Row(visible=False) as registerRoleRow:
+            roleRadio = gr.Radio(choices=["Aluno", "Professor", "Admin"], label="Perfil", value="Aluno")
+        with gr.Row():
+            btnLogin = gr.Button("Entrar", variant="primary", visible=True)
+            btnRegister = gr.Button("Registrar", visible=False)
+        loginMsg = gr.Markdown("")
+
+    with blocks.Column(visible=False) as viewHome:
+        homeGreet = gr.Markdown("## 🏠 Home")
+        gr.Markdown("Escolha uma opção para continuar:")
+        with gr.Row():
+            btnGoCustomize = gr.Button("⚙️ Personalizar o Chat", variant="primary")
+            btnLogout1 = gr.Button("Sair")
+        with gr.Row(visible=False) as studentRow:
+            btnStudentRooms = gr.Button("🎒 Minhas Salas", variant="secondary")
+        with gr.Row(visible=False) as profRow:
+            btnViewStudents = gr.Button("👥 Ver alunos cadastrados", variant="secondary")
+            btnTeacherClassrooms = gr.Button("🏫 Minhas Salas", variant="primary")
+        studentsOut = gr.Markdown("")
+
+    authMode.change(
+        switch_auth_mode,
+        inputs=authMode,
+        outputs=[registerRow, registerRoleRow, btnLogin, btnRegister, loginMsg],
+    )
+
+    return AuthViews(
+        header=header,
+        view_login=viewLogin,
+        view_home=viewHome,
+        auth_mode=authMode,
+        username=username,
+        password=password,
+        email=email,
+        full_name=fullName,
+        role_radio=roleRadio,
+        register_row=registerRow,
+        register_role_row=registerRoleRow,
+        btn_login=btnLogin,
+        btn_register=btnRegister,
+        login_msg=loginMsg,
+        home_greet=homeGreet,
+        btn_go_customize=btnGoCustomize,
+        btn_logout_home=btnLogout1,
+        student_row=studentRow,
+        btn_student_rooms=btnStudentRooms,
+        teacher_row=profRow,
+        btn_view_students=btnViewStudents,
+        btn_teacher_classrooms=btnTeacherClassrooms,
+        students_out=studentsOut,
+    )
+
+
+def _route_home(auth):
+    is_auth = bool(auth and auth.get("isAuth") is True and auth.get("username"))
+    user = (auth or {}).get("username") or ""
+    role = (auth or {}).get("role", "aluno")
+    print(f"[NAV] _route_home: isAuth={is_auth} user='{user}' role='{role}'")
+    if not is_auth:
+        return (
+            gr.update(value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(value=""),
+        )
+    role = str(role).lower()
+    header_txt = f"### 👋 Olá, **{user}**! (perfil: {role})"
+    if role == "admin":
+        return (
+            gr.update(value=header_txt, visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{user}**"),
+        )
+    else:
+        return (
+            gr.update(value=header_txt, visible=True),
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+            gr.update(value=f"## 🏠 Home — bem-vindo, **{user}**"),
+        )
+
+
+def _teacherUi(auth):
+    role = (auth or {}).get("role", "aluno")
+    is_prof = str(role).lower() == "professor"
+    return gr.update(visible=is_prof), gr.update(value="")
+
+
+def _studentUi(auth):
+    role = (auth or {}).get("role", "aluno")
+    is_student_or_admin = str(role).lower() in ("aluno", "admin")
+    return gr.update(visible=is_student_or_admin)
+
+
+def _back_home(auth):
+    role = (auth or {}).get("role", "aluno")
+    if str(role).lower() == "admin":
+        return (
+            gr.update(visible=False),
+            gr.update(visible=True),
+            gr.update(visible=False),
+        )
+    return (
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=True),
+    )
+
+
+def switch_auth_mode(mode):
+    is_register = str(mode or "").strip().lower() == "registrar"
+    return (
+        gr.update(visible=is_register),
+        gr.update(visible=is_register),
+        gr.update(visible=not is_register),
+        gr.update(visible=is_register),
+        gr.update(value=""),
+    )
+
+
+def doRegister(username, password, email, full_name, role, authState):
+    raw_username = (username or "").strip()
+    raw_email = (email or "").strip()
+    login_email = raw_email.lower()
+    name = (full_name or "").strip()
+    pw = (password or "").strip()
+    print(f"[AUTH] doRegister: username='{raw_username.lower()}' email='{login_email}' role='{role}'")
+    if not raw_username or not login_email or not name or not pw:
+        return gr.update(value="⚠️ Informe usuário, e-mail, nome e senha."), authState
+
+    role_pt = (role or "aluno").strip().lower() or "aluno"
+    supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
+
+    display_name = name or raw_username or login_email
+
+    try:
+        created = create_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            login=login_email,
+            password_hash=_hashPw(pw),
+            role=supabase_role,
+            display_name=display_name,
+        )
+        print(f"[AUTH] doRegister: Supabase created -> {created}")
+    except SupabaseConfigurationError:
+        warn = "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de registrar usuários."
+        print("[AUTH] doRegister: configuração Supabase ausente")
+        return gr.update(value=warn), authState
+    except SupabaseUserExistsError:
+        print(f"[AUTH] doRegister: usuário já existe -> {login_email}")
+        return gr.update(value="⚠️ Usuário já cadastrado."), authState
+    except SupabaseOperationError as err:
+        print(f"[AUTH] doRegister: erro Supabase -> {err}")
+        return gr.update(value=f"❌ Erro ao registrar: {err}"), authState
+    except Exception as exc:
+        print(f"[AUTH] doRegister: erro inesperado -> {exc}")
+        return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
+
+    return gr.update(value="✅ Usuário registrado! Faça login."), authState
+
+
+def doLogin(username, password, authState):
+    uname = (username or "").strip().lower()
+    pw = (password or "").strip()
+    if not uname or not pw:
+        return gr.update(value="⚠️ Informe usuário e senha."), authState
+
+    try:
+        entry = fetch_user_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            uname,
+        )
+    except SupabaseConfigurationError:
+        warn = "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para efetuar login."
+        return gr.update(value=warn), authState
+    except SupabaseOperationError as err:
+        print(f"[AUTH] doLogin: erro Supabase -> {err}")
+        return gr.update(value=f"❌ Erro ao fazer login: {err}"), authState
+    except Exception as exc:
+        print(f"[AUTH] doLogin: erro inesperado -> {exc}")
+        return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
+
+    if not entry:
+        print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
+        return gr.update(value="❌ Usuário ou senha incorretos."), authState
+
+    expected_hash = entry.password_hash or ""
+    if expected_hash != _hashPw(pw):
+        print(f"[AUTH] doLogin: senha incorreta -> {uname}")
+        return gr.update(value="❌ Usuário ou senha incorretos."), authState
+
+    mapped_role = ROLE_DB_TO_PT.get((entry.role or "student").strip().lower(), "aluno")
+    authState = {
+        "isAuth": True,
+        "username": uname,
+        "role": mapped_role,
+        "user_id": entry.id,
+        "display_name": entry.name or entry.email,
+    }
+    print(f"[AUTH] doLogin: sucesso -> {authState}")
+    return gr.update(value=f"✅ Bem-vindo, **{uname}** (perfil: {mapped_role})."), authState
+
+
+def _doLogout():
+    print("[AUTH] logout")
+    return (
+        {"isAuth": False, "username": None},
+        gr.update(value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
+        gr.update(visible=True),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+    )
+
+
+def listStudents(auth):
+    role = (auth or {}).get("role", "aluno")
+    if str(role).lower() not in ("professor", "admin"):
+        return "⚠️ Apenas professores/admin podem visualizar a lista de alunos."
+    try:
+        records = fetch_users_by_role(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            SUPABASE_USERS_TABLE,
+            ROLE_PT_TO_DB.get("aluno", "student"),
+        )
+    except SupabaseConfigurationError:
+        return "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para visualizar os alunos."
+    except SupabaseOperationError as err:
+        print(f"[AUTH] listStudents: erro Supabase -> {err}")
+        return f"❌ Erro ao consultar alunos: {err}"
+    except Exception as exc:
+        print(f"[AUTH] listStudents: erro inesperado -> {exc}")
+        return f"❌ Erro inesperado ao consultar alunos: {exc}"
+
+    students = []
+    for record in records:
+        label = record.name or record.email or record.id
+        if label:
+            students.append(label)
+
+    if not students:
+        return "Nenhum aluno cadastrado ainda."
+    students.sort(key=lambda x: x.lower())
+    bullet = "\n".join([f"- {s}" for s in students])
+    return f"### Alunos cadastrados ({len(students)})\n\n{bullet}"
+
+
+__all__ = [
+    "AuthViews",
+    "build_auth_views",
+    "_route_home",
+    "_teacherUi",
+    "_studentUi",
+    "_back_home",
+    "switch_auth_mode",
+    "doRegister",
+    "doLogin",
+    "_doLogout",
+    "listStudents",
+]
