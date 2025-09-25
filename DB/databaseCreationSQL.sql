@@ -20,7 +20,8 @@ $$;
 -- 0) Users
 CREATE TABLE IF NOT EXISTS public.users (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name           text NOT NULL,
+  username       text NOT NULL UNIQUE,
+  full_name      text,
   email          text NOT NULL UNIQUE,
   password_hash  text NOT NULL,
   role           role_type NOT NULL,
