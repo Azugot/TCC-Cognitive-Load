@@ -235,6 +235,8 @@ def doRegister(username, password, confirm_password, email, full_name, role, aut
             login=login_email,
             password_hash=_hashPw(pw),
             role=supabase_role,
+            username=raw_username,
+            full_name=display_name,
             display_name=display_name,
         )
         print(f"[AUTH] doRegister: Supabase created -> {created}")
@@ -288,15 +290,22 @@ def doLogin(username, password, authState):
         return gr.update(value="❌ Usuário ou senha incorretos."), authState
 
     mapped_role = ROLE_DB_TO_PT.get((entry.role or "student").strip().lower(), "aluno")
+    stored_username = (entry.username or uname or "").strip() or uname
+    display_name = entry.full_name or entry.username or entry.email or stored_username
     authState = {
         "isAuth": True,
-        "username": uname,
+        "username": stored_username,
         "role": mapped_role,
         "user_id": entry.id,
-        "display_name": entry.name or entry.email,
+        "display_name": display_name,
     }
     print(f"[AUTH] doLogin: sucesso -> {authState}")
-    return gr.update(value=f"✅ Bem-vindo, **{uname}** (perfil: {mapped_role})."), authState
+    return (
+        gr.update(
+            value=f"✅ Bem-vindo, **{display_name}** (usuário: {stored_username} · perfil: {mapped_role})."
+        ),
+        authState,
+    )
 
 
 def _doLogout():
@@ -338,7 +347,7 @@ def listStudents(auth):
 
     students = []
     for record in records:
-        label = record.name or record.email or record.id
+        label = record.full_name or record.username or record.email or record.id
         if label:
             students.append(label)
 

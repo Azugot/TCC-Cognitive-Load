@@ -240,16 +240,24 @@ def _get_client(url: str, key: str) -> Client:
 @dataclass
 class UserRecord:
     id: Optional[str]
-    name: Optional[str]
+    username: Optional[str]
+    full_name: Optional[str]
     email: Optional[str]
     password_hash: Optional[str]
     role: Optional[str]
 
     @classmethod
     def from_raw(cls, data: Dict[str, Any]) -> "UserRecord":
+        username = data.get("username") or data.get("name") or data.get("login")
+        full_name = data.get("full_name") or data.get("display_name")
+        if not full_name:
+            # Dados legados armazenavam o "name" como display name; mantém compatibilidade.
+            full_name = data.get("name")
+
         return cls(
             id=data.get("id"),
-            name=data.get("name"),
+            username=username,
+            full_name=full_name,
             email=data.get("email"),
             password_hash=data.get("password_hash") or data.get("pw"),
             role=data.get("role") or data.get("role_type"),
@@ -276,7 +284,7 @@ def fetch_user_record(url: str, key: str, table: str, login: str) -> Optional[Us
     try:
         response = (
             client.table(table)
-            .select("id,name,email,password_hash,role")
+            .select("id,username,full_name,email,password_hash,role")
             .eq("email", identifier)
             .limit(1)
             .execute()
@@ -293,7 +301,25 @@ def fetch_user_record(url: str, key: str, table: str, login: str) -> Optional[Us
     try:
         response = (
             client.table(table)
-            .select("id,name,email,password_hash,role")
+            .select("id,username,full_name,email,password_hash,role")
+            .eq("username", identifier)
+            .limit(1)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    data = response.data or []
+    if data:
+        return UserRecord.from_raw(data[0])
+
+    # Compatibilidade com instâncias antigas que ainda utilizam a coluna "name".
+    try:
+        response = (
+            client.table(table)
+            .select("id,username,full_name,email,password_hash,role,name")
             .eq("name", identifier)
             .limit(1)
             .execute()
@@ -317,6 +343,8 @@ def create_user_record(
     login: str,
     password_hash: str,
     role: str,
+    username: Optional[str] = None,
+    full_name: Optional[str] = None,
     display_name: Optional[str] = None,
 ) -> UserRecord:
     """Create a new user record in Supabase."""
@@ -325,8 +353,12 @@ def create_user_record(
     if not identifier:
         raise SupabaseOperationError("Login inválido para criação de usuário.")
 
+    normalized_username = (username or identifier or "").strip() or identifier
+    normalized_full_name = (full_name or display_name or normalized_username).strip()
+
     payload: Dict[str, Any] = {
-        "name": display_name or identifier,
+        "username": normalized_username,
+        "full_name": normalized_full_name,
         "email": identifier,
         "password_hash": password_hash,
         "role": role,
@@ -356,9 +388,9 @@ def fetch_users_by_role(
     try:
         response = (
             client.table(table)
-            .select("id,name,email,password_hash,role")
+            .select("id,username,full_name,email,password_hash,role")
             .eq("role", role)
-            .order("name")
+            .order("full_name")
             .execute()
         )
     except APIError as err:
@@ -373,7 +405,7 @@ def fetch_users_by_role(
 def _fetch_users_map(
     client: Client, user_ids: Set[Optional[str]], users_table: str = "users"
 ) -> Dict[str, Dict[str, Optional[str]]]:
-    """Return a mapping of user_id -> {login, display_name, email, name}."""
+    """Return a mapping of user_id -> {login, display_name, email, name, username}."""
 
     cleaned = [uid for uid in user_ids if uid]
     if not cleaned:
@@ -382,7 +414,7 @@ def _fetch_users_map(
     try:
         response = (
             client.table(users_table)
-            .select("id,email,name")
+            .select("id,username,full_name,email,name")
             .in_("id", cleaned)
             .execute()
         )
@@ -396,12 +428,16 @@ def _fetch_users_map(
         uid = row.get("id")
         if not uid:
             continue
-        login = _normalize_login(row.get("email") or row.get("name"))
+        login = _normalize_login(row.get("email") or row.get("username") or row.get("name"))
         mapping[uid] = {
             "login": login,
-            "display_name": row.get("name") or row.get("email"),
+            "display_name": row.get("full_name")
+            or row.get("name")
+            or row.get("username")
+            or row.get("email"),
             "email": row.get("email"),
-            "name": row.get("name"),
+            "name": row.get("full_name") or row.get("name"),
+            "username": row.get("username") or row.get("name"),
         }
     return mapping
 
