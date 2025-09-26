@@ -221,7 +221,7 @@ def build_studio_page(
                             "¹ Temperatura: controla a aleatoriedade das respostas. Valores maiores geram respostas mais criativas, enquanto valores menores priorizam segurança e consistência.\n"
                             "² Top-p: define a fração acumulada de probabilidade considerada na geração. Reduzir o valor limita o vocabulário às palavras mais prováveis.\n"
                             "³ Top-k: especifica quantas palavras mais prováveis podem ser escolhidas a cada passo. Valores pequenos tornam a saída mais previsível.\n"
-                            "⁴ Max tokens (saída): limita o tamanho máximo da resposta do modelo. Aumentar o valor permite respostas mais longas, mas pode consumir mais créditos."
+                            "⁴ Max tokens (saída): limita o tamanho máximo da resposta do modelo. Aumentar o valor permite respostas mais longas."
                         )
                         applyAdv.click(
                             updateAdvOptions,
