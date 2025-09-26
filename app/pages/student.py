@@ -66,7 +66,6 @@ class StudentViews:
     provider_markdown: gr.Markdown
     chatbot: gr.Chatbot
     clear_button: gr.Button
-    export_button: gr.Button
     back_to_setup_button: gr.Button
     end_chat_button: gr.Button
     chat_input: gr.MultimodalTextbox
@@ -734,7 +733,6 @@ def build_student_views(
                 stChatbot = gr.Chatbot(label="Chat (Sala)", type="messages", height=420)
                 with gr.Row():
                     stClear = gr.Button("Limpar chat")
-                    stExport = gr.Button("Exportar conversa (PDF)")
                 with gr.Row():
                     stBackToSetup = gr.Button("⬅️ Voltar para configuração da sala")
                     stEndChat = gr.Button("Encerrar Chat", variant="stop")
@@ -818,7 +816,6 @@ def build_student_views(
     ).then(_student_chat_enable, outputs=stChatInput)
 
     stClear.click(clearChat, outputs=stChatbot)
-    stExport.click(createChatPdf, inputs=[stChatbot, docs_state])
 
     stEndChat.click(
         student_end_chat,
@@ -996,7 +993,6 @@ def build_student_views(
         provider_markdown=stProvider,
         chatbot=stChatbot,
         clear_button=stClear,
-        export_button=stExport,
         back_to_setup_button=stBackToSetup,
         end_chat_button=stEndChat,
         chat_input=stChatInput,

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import gradio as gr
 
-from services.docs import createChatPdf, extractPdfText
+from services.docs import extractPdfText
 from services.script_builder import buildCustomScript
 from services.vertex_client import VERTEX_CFG, _streamFromVertex, _vertex_err
 
@@ -23,7 +23,6 @@ class StudioView:
     chat_input: gr.MultimodalTextbox
     chatbot: gr.Chatbot
     clear_button: gr.Button
-    export_button: gr.Button
 
 
 def addMessage(history, message, docsState, authState, currentChatId, chatsState):
@@ -231,7 +230,6 @@ def build_studio_page(
                 chatbot = gr.Chatbot(label="Chat", type="messages", height=420)
                 with gr.Row():
                     clearBtn = gr.Button("Limpar chat")
-                    exportBtn = gr.Button("Exportar conversa (PDF)")
                 backToConfigBtn = gr.Button("⬅️ Voltar para customização")
                 allow_file_upload = bool(VERTEX_CFG and not _vertex_err)
                 chat_placeholder = (
@@ -289,7 +287,6 @@ def build_studio_page(
         botMsg.then(lambda: gr.update(interactive=True), outputs=chatInput)
 
         clearBtn.click(clearChat, outputs=chatbot)
-        exportBtn.click(createChatPdf, inputs=[chatbot, docs_state])
 
     return StudioView(
         container=viewStudio,
@@ -299,5 +296,4 @@ def build_studio_page(
         chat_input=chatInput,
         chatbot=chatbot,
         clear_button=clearBtn,
-        export_button=exportBtn,
     )
