@@ -69,8 +69,21 @@ def _class_member_labels(
 
     members = (classroom or {}).get("members", {}) or {}
     member_ids = list(members.get(group, []) or [])
-    labels_map = members.get(f"{group}_labels", {}) or {}
-    usernames_map = members.get(f"{group}_usernames", {}) or {}
+
+    def _map_for(suffix: str) -> Dict[str, str]:
+        candidates = [f"{group}_{suffix}"]
+        if group.endswith("s") and len(group) > 1:
+            singular = group[:-1]
+            candidates.append(f"{singular}_{suffix}")
+        for key in candidates:
+            value = members.get(key)
+            if isinstance(value, dict) and value:
+                return value
+        # fall back to empty dict if no mapping available
+        return {}
+
+    labels_map = _map_for("labels")
+    usernames_map = _map_for("usernames")
 
     seen = set()
     results = []
