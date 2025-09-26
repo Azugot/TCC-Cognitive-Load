@@ -24,15 +24,16 @@ from services.supabase_client import (
 from app.config import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_USERS_TABLE
 from app.pages.admin import _render_classrooms_md, _render_subjects_md, _refresh_states
 from app.pages.history_shared import (
+    HISTORY_TABLE_HEADERS,
     _chat_metadata_md,
     _comments_markdown,
     _format_timestamp,
-    _history_table_data,
     _subjects_label,
     append_chat_comment,
     generate_auto_evaluation,
     load_chat_entry,
     prepare_download,
+    prepare_history_listing,
 )
 from app.utils import (
     _auth_user_id,
@@ -90,34 +91,27 @@ def teacher_history_refresh(auth, classroom_filter):
         )
 
     classroom_filter = (classroom_filter or "").strip()
-    if classroom_filter:
-        filtered = [
-            chat for chat in chats if str(chat.get("classroom_id")) == classroom_filter
-        ]
-    else:
-        filtered = chats
 
-    table = _history_table_data(filtered)
-    dropdown_choices = []
-    for chat in filtered:
-        chat_id = chat.get("id")
-        if not chat_id:
-            continue
+    def _filter_chat(chat: Dict[str, Any]) -> bool:
+        return str(chat.get("classroom_id")) == classroom_filter
+
+    def _dropdown_label(chat: Dict[str, Any]) -> str:
         student = chat.get("student_name") or chat.get("student_login") or "Aluno"
         started = _format_timestamp(chat.get("started_at"))
-        dropdown_choices.append((f"{student} — {started}", chat_id))
+        return f"{student} — {started}"
 
-    default_id = dropdown_choices[0][1] if dropdown_choices else None
-    message = (
-        f"✅ {len(filtered)} chat(s) encontrados." if filtered else "ℹ️ Nenhum chat para o filtro."
+    filter_fn = _filter_chat if classroom_filter else None
+
+    table_update, filtered, dropdown_update, message, default_id = prepare_history_listing(
+        chats,
+        column_labels=HISTORY_TABLE_HEADERS,
+        filter_fn=filter_fn,
+        dropdown_label=_dropdown_label,
+        empty_message="ℹ️ Nenhum chat para o filtro.",
+        found_message="✅ {count} chat(s) encontrados.",
     )
-    return (
-        gr.update(value=table),
-        filtered,
-        gr.update(choices=dropdown_choices, value=default_id),
-        message,
-        default_id,
-    )
+
+    return table_update, filtered, dropdown_update, message, default_id
 
 
 def teacher_history_load_chat(
@@ -738,14 +732,7 @@ def build_teacher_view(
                 tHistoryRefresh = gr.Button("🔄 Atualizar histórico")
             tHistoryInfo = gr.Markdown("Selecione uma sala para listar os chats.")
             tHistoryTable = gr.Dataframe(
-                headers=[
-                    "Aluno",
-                    "Sala",
-                    "Assuntos",
-                    "Resumo",
-                    "Nota",
-                    "Iniciado em",
-                ],
+                headers=list(HISTORY_TABLE_HEADERS),
                 datatype=["str"] * 6,
                 interactive=False,
                 wrap=True,

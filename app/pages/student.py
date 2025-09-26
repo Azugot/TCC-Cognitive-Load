@@ -29,10 +29,11 @@ from app.config import (
 )
 from app.pages.chat import addMessage, bot, clearChat
 from app.pages.history_shared import (
+    HISTORY_TABLE_HEADERS,
     _format_timestamp,
-    _history_table_data,
     load_chat_entry,
     prepare_download,
+    prepare_history_listing,
 )
 from app.utils import (
     _get_class_by_id,
@@ -132,32 +133,27 @@ def student_history_refresh(auth, classroom_filter):
         )
 
     classroom_filter = (classroom_filter or "").strip()
-    if classroom_filter:
-        filtered = [chat for chat in chats if str(chat.get("classroom_id")) == classroom_filter]
-    else:
-        filtered = chats
 
-    table = _history_table_data(filtered)
-    dropdown_choices = []
-    for chat in filtered:
-        chat_id = chat.get("id")
-        if not chat_id:
-            continue
+    def _filter_chat(chat: Dict[str, Any]) -> bool:
+        return str(chat.get("classroom_id")) == classroom_filter
+
+    def _dropdown_label(chat: Dict[str, Any]) -> str:
         classroom = chat.get("classroom_name") or chat.get("classroom_id") or "Sala"
         started = _format_timestamp(chat.get("started_at"))
-        dropdown_choices.append((f"{classroom} — {started}", chat_id))
+        return f"{classroom} — {started}"
 
-    default_id = dropdown_choices[0][1] if dropdown_choices else None
-    message = (
-        f"✅ {len(filtered)} chat(s) encontrados." if filtered else "ℹ️ Nenhum chat para o filtro selecionado."
+    filter_fn = _filter_chat if classroom_filter else None
+
+    table_update, filtered, dropdown_update, message, default_id = prepare_history_listing(
+        chats,
+        column_labels=HISTORY_TABLE_HEADERS,
+        filter_fn=filter_fn,
+        dropdown_label=_dropdown_label,
+        empty_message="ℹ️ Nenhum chat para o filtro selecionado.",
+        found_message="✅ {count} chat(s) encontrados.",
     )
-    return (
-        gr.update(value=table),
-        filtered,
-        gr.update(choices=dropdown_choices, value=default_id),
-        message,
-        default_id,
-    )
+
+    return table_update, filtered, dropdown_update, message, default_id
 
 
 def student_history_load_chat(chat_id, history_entries, current_download_path):
@@ -686,14 +682,7 @@ def build_student_views(
                 stHistoryRefresh = gr.Button("🔄 Atualizar histórico")
             stHistoryInfo = gr.Markdown("Selecione uma sala ou atualize para ver seus chats.")
             stHistoryTable = gr.Dataframe(
-                headers=[
-                    "Aluno",
-                    "Sala",
-                    "Assuntos",
-                    "Resumo",
-                    "Nota",
-                    "Iniciado em",
-                ],
+                headers=list(HISTORY_TABLE_HEADERS),
                 datatype=["str"] * 6,
                 interactive=False,
                 wrap=True,

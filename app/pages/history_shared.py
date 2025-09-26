@@ -6,7 +6,9 @@ import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+
+import gradio as gr
 
 from services.docs import extractPdfText
 from services.supabase_client import (
@@ -93,6 +95,16 @@ def _comments_markdown(comments: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+HISTORY_TABLE_HEADERS: Tuple[str, ...] = (
+    "Aluno",
+    "Sala",
+    "Assuntos",
+    "Resumo",
+    "Nota",
+    "Iniciado em",
+)
+
+
 def _history_table_data(entries: List[Dict[str, Any]]) -> List[List[str]]:
     table: List[List[str]] = []
     for chat in entries:
@@ -115,6 +127,66 @@ def _history_table_data(entries: List[Dict[str, Any]]) -> List[List[str]]:
         started = _format_timestamp(chat.get("started_at"))
         table.append([student, classroom, subjects, summary, grade_txt, started])
     return table
+
+
+def prepare_history_listing(
+    chats: Optional[List[Dict[str, Any]]],
+    *,
+    column_labels: Sequence[str],
+    filter_fn: Optional[Callable[[Dict[str, Any]], bool]],
+    dropdown_label: Callable[[Dict[str, Any]], str],
+    dropdown_value_key: str = "id",
+    empty_message: str,
+    found_message: Union[str, Callable[[int], str]] = "✅ {count} chat(s) encontrados.",
+) -> Tuple[Any, List[Dict[str, Any]], Any, str, Optional[str]]:
+    """Normalize shared outputs for history listings.
+
+    The helper centralizes filtering, table rendering and dropdown preparation for
+    history views.  The caller controls the label formatting, the value key used
+    for the dropdown and feedback messages displayed to the user.
+    """
+
+    entries = list(chats or [])
+    if filter_fn:
+        filtered = [chat for chat in entries if filter_fn(chat)]
+    else:
+        filtered = entries
+
+    table = _history_table_data(filtered)
+    expected_cols = len(column_labels)
+    if expected_cols:
+        normalized_table: List[List[str]] = []
+        for row in table:
+            normalized = list(row[:expected_cols])
+            if len(normalized) < expected_cols:
+                normalized.extend([""] * (expected_cols - len(normalized)))
+            normalized_table.append(normalized)
+        table = normalized_table
+
+    dropdown_choices: List[Tuple[str, Any]] = []
+    for chat in filtered:
+        value = chat.get(dropdown_value_key)
+        if not value:
+            continue
+        dropdown_choices.append((dropdown_label(chat), value))
+
+    default_value = dropdown_choices[0][1] if dropdown_choices else None
+
+    if filtered:
+        if callable(found_message):
+            message = str(found_message(len(filtered)))
+        else:
+            try:
+                message = str(found_message).format(count=len(filtered))
+            except Exception:
+                message = str(found_message)
+    else:
+        message = empty_message
+
+    table_update = gr.update(value=table)
+    dropdown_update = gr.update(choices=dropdown_choices, value=default_value)
+
+    return table_update, filtered, dropdown_update, message, default_value
 
 
 def _chat_metadata_md(chat: Dict[str, Any]) -> str:
@@ -429,11 +501,13 @@ def prepare_download(download_path):
 
 
 __all__ = [
+    "HISTORY_TABLE_HEADERS",
     "ChatLoadResult",
     "_format_timestamp",
     "_subjects_label",
     "_comments_markdown",
     "_history_table_data",
+    "prepare_history_listing",
     "_chat_metadata_md",
     "load_chat_entry",
     "generate_auto_evaluation",
