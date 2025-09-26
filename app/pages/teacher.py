@@ -216,17 +216,26 @@ def _render_teacher_members_md(cls_id, classrooms):
     if not c:
         return "⚠️ Selecione uma de suas salas."
     members = c.get("members", {}) or {}
+    teacher_ids = members.get("teachers", [])
+    student_ids = members.get("students", [])
+    
+    teacher_labels = members.get("teacher_labels", {})
+    student_labels = members.get("student_labels", {})
+    
     teachers = ", ".join(
-        _class_member_labels(c, "teachers", include_usernames=True)
+        f"{teacher_labels.get(uid, uid)} (u:{uid})" for uid in teacher_ids
     ) or "—"
+    
     students = ", ".join(
-        _class_member_labels(c, "students", include_usernames=True)
+        f"{student_labels.get(uid, uid)} (u:{uid})" for uid in student_ids
     ) or "—"
+    
     return (
         f"### Membros da sala `{c['name']}`\n"
-        f"- 👩‍🏫 Professores ({len(members.get('teachers', []))}): {teachers}\n"
-        f"- 🎓 Alunos ({len(members.get('students', []))}): {students}"
+        f"- 👩‍🏫 Professores ({len(teacher_ids)}): {teachers}\n"
+        f"- 🎓 Alunos ({len(student_ids)}): {students}"
     )
+
 
 
 def _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class):
