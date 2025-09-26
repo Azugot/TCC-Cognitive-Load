@@ -2,7 +2,7 @@
 
 import time
 import uuid
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 def _now_ts() -> int:
@@ -56,3 +56,42 @@ def _student_username(auth: Optional[Dict[str, Any]]) -> str:
 
 def _get_class_by_id(classrooms: Iterable[Dict[str, Any]], cls_id: Optional[str]):
     return next((x for x in (classrooms or []) if x.get("id") == cls_id), None)
+
+
+def _class_member_labels(
+    classroom: Optional[Dict[str, Any]],
+    group: str,
+    *,
+    include_usernames: bool = False,
+) -> List[str]:
+    """Return formatted member labels for the requested classroom group."""
+
+    members = (classroom or {}).get("members", {}) or {}
+    logins = list(members.get(group, []) or [])
+    labels_map = members.get(f"{group}_labels", {}) or {}
+
+    seen = set()
+    results = []
+    for login in logins:
+        normalized = _normalize_username(login)
+        key = normalized or login
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        raw_label = labels_map.get(key) or labels_map.get(login) or labels_map.get(normalized) or ""
+        base_label = raw_label.strip() if isinstance(raw_label, str) else ""
+
+        if include_usernames and key:
+            if base_label and base_label.lower() != key:
+                formatted = f"{base_label} (u: {key})"
+            else:
+                formatted = key
+        else:
+            formatted = base_label or key
+
+        if formatted:
+            results.append((formatted.lower(), formatted))
+
+    results.sort(key=lambda item: item[0])
+    return [label for _, label in results]

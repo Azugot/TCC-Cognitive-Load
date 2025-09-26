@@ -359,7 +359,19 @@ def listStudents(auth):
 
     students = []
     for record in records:
-        label = record.full_name or record.username or record.email or record.id
+        username = (record.username or "").strip()
+        full_name = (record.full_name or "").strip()
+        fallback = (record.email or "").strip() or (record.id or "").strip()
+
+        if full_name and username:
+            label = f"{full_name} (u: {username})"
+        elif full_name:
+            label = full_name
+        elif username and fallback and fallback.lower() != username.lower():
+            label = f"{fallback} (u: {username})"
+        else:
+            label = username or fallback
+
         if label:
             students.append(label)
 

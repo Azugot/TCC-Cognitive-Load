@@ -36,6 +36,7 @@ from app.pages.history_shared import (
     prepare_history_listing,
 )
 from app.utils import (
+    _class_member_labels,
     _get_class_by_id,
     _mk_id,
     _normalize_username,
@@ -204,8 +205,8 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
         return "⚠️ Selecione uma sala."
-    teachers = ", ".join(c["members"]["teachers"]) or "—"
-    students = ", ".join(c["members"]["students"]) or "—"
+    teachers = ", ".join(_class_member_labels(c, "teachers")) or "—"
+    students = ", ".join(_class_member_labels(c, "students")) or "—"
     theme = c.get("theme_name") or c["name"]
     subs = subjects_by_class.get(cls_id, [])
     subs_txt = ", ".join([s["name"] for s in subs if s.get("active", True)]) or "—"

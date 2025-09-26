@@ -37,6 +37,7 @@ from app.pages.history_shared import (
 )
 from app.utils import (
     _auth_user_id,
+    _class_member_labels,
     _get_class_by_id,
     _is_admin,
     _is_teacher,
@@ -214,8 +215,18 @@ def _render_teacher_members_md(cls_id, classrooms):
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
         return "⚠️ Selecione uma de suas salas."
-    s = c["members"]["students"]
-    return f"### Alunos da sala `{c['name']}`\n- 🎓 {len(s)} aluno(s): " + (", ".join(s) if s else "—")
+    members = c.get("members", {}) or {}
+    teachers = ", ".join(
+        _class_member_labels(c, "teachers", include_usernames=True)
+    ) or "—"
+    students = ", ".join(
+        _class_member_labels(c, "students", include_usernames=True)
+    ) or "—"
+    return (
+        f"### Membros da sala `{c['name']}`\n"
+        f"- 👩‍🏫 Professores ({len(members.get('teachers', []))}): {teachers}\n"
+        f"- 🎓 Alunos ({len(members.get('students', []))}): {students}"
+    )
 
 
 def _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class):
