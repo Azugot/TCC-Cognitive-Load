@@ -185,11 +185,12 @@ def admin_history_load_chat(chat_id, history_entries, current_download_path):
             gr.Warning(result.notice)
 
     manual_value = 0
+    preview_value = result.preview_text or "ℹ️ Carregue um chat para visualizar a prévia."
 
     return (
         result.chat_id,
         gr.update(value=result.metadata_md),
-        gr.update(value=result.preview_text),
+        gr.update(value=preview_value),
         gr.update(value=result.evaluation_text),
         gr.update(value=manual_value),
         gr.update(value=result.comments_md),
@@ -951,7 +952,11 @@ def build_admin_views(
             adHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
             adHistoryLoad = gr.Button("📄 Ver detalhes")
         adHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
-        adHistoryPreview = gr.Textbox(label="Prévia do PDF", lines=12, interactive=False, value="")
+        gr.Markdown("#### Prévia do PDF")
+        adHistoryPreview = gr.Markdown(
+            "ℹ️ Carregue um chat para visualizar a prévia.",
+            elem_classes=["history-preview"],
+        )
         with gr.Row():
             adHistoryDownload = gr.DownloadButton("⬇️ Baixar PDF", visible=False, variant="secondary")
             adHistoryGenerateEval = gr.Button("🤖 Gerar avaliação automática", variant="secondary")

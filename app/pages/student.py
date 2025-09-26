@@ -77,7 +77,7 @@ class StudentViews:
     history_chat_dropdown: gr.Dropdown
     history_load_button: gr.Button
     history_metadata: gr.Markdown
-    history_preview: gr.Textbox
+    history_preview: gr.Markdown
     history_download_button: gr.DownloadButton
     history_evaluation: gr.Textbox
     history_comments: gr.Markdown
@@ -164,10 +164,12 @@ def student_history_load_chat(chat_id, history_entries, current_download_path):
         else:
             gr.Warning(result.notice)
 
+    preview_value = result.preview_text or "ℹ️ Carregue um chat para visualizar a prévia."
+
     return (
         result.chat_id,
         gr.update(value=result.metadata_md),
-        gr.update(value=result.preview_text),
+        gr.update(value=preview_value),
         gr.update(value=result.evaluation_text),
         gr.update(value=result.comments_md),
         result.transcript_text,
@@ -690,8 +692,10 @@ def build_student_views(
                 stHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
                 stHistoryLoad = gr.Button("📄 Ver detalhes")
             stHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
-            stHistoryPreview = gr.Textbox(
-                label="Prévia do PDF", lines=10, interactive=False, value=""
+            gr.Markdown("#### Prévia do PDF")
+            stHistoryPreview = gr.Markdown(
+                "ℹ️ Carregue um chat para visualizar a prévia.",
+                elem_classes=["history-preview"],
             )
             with gr.Row():
                 stHistoryDownload = gr.DownloadButton(
