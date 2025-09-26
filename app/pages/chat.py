@@ -9,7 +9,7 @@ import gradio as gr
 
 from services.docs import createChatPdf, extractPdfText
 from services.script_builder import buildCustomScript
-from services.vertex_client import VERTEX_CFG, _streamFromVertex
+from services.vertex_client import VERTEX_CFG, _streamFromVertex, _vertex_err
 
 from app.utils import _mk_id, _now_ts
 
@@ -233,10 +233,18 @@ def build_studio_page(
                     clearBtn = gr.Button("Limpar chat")
                     exportBtn = gr.Button("Exportar conversa (PDF)")
                 backToConfigBtn = gr.Button("⬅️ Voltar para customização")
+                allow_file_upload = bool(VERTEX_CFG and not _vertex_err)
+                chat_placeholder = (
+                    "Digite sua mensagem ou envie um PDF..."
+                    if allow_file_upload
+                    else "Digite sua mensagem..."
+                )
+                chat_sources = ["upload"] if allow_file_upload else []
+
                 chatInput = gr.MultimodalTextbox(
                     show_label=False,
-                    placeholder="Digite sua mensagem ou envie um PDF...",
-                    sources=["upload"],
+                    placeholder=chat_placeholder,
+                    sources=chat_sources,
                     interactive=True,
                 )
 
