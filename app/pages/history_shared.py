@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -30,6 +32,7 @@ class ChatLoadResult:
     chat_id: Optional[str]
     chat: Optional[Dict[str, Any]]
     metadata_md: str
+    summary_text: str
     preview_text: str
     evaluation_text: str
     comments_md: str
@@ -93,6 +96,62 @@ def _comments_markdown(comments: List[Dict[str, Any]]) -> str:
             score_label = ""
         lines.append(f"- **{author}{score_label}** — {created}: {text}")
     return "\n".join(lines)
+
+
+_SPEAKER_PATTERN = re.compile(r"^\s*([\wÀ-ÖØ-öø-ÿ]+(?:\s+[\wÀ-ÖØ-öø-ÿ]+)*)\s*:\s*")
+
+
+def _normalize_speaker(label: str) -> Optional[str]:
+    base = "".join(
+        char for char in unicodedata.normalize("NFKD", label) if not unicodedata.combining(char)
+    ).lower()
+
+    for needle, key in (
+        ("aplic", "aplicacao"),
+        ("assist", "assistente"),
+        ("usuario", "usuario"),
+        ("user", "usuario"),
+        ("app", "aplicacao"),
+        ("aluno", "aluno"),
+        ("professor", "professor"),
+        ("tutor", "tutor"),
+        ("sistema", "sistema"),
+    ):
+        if needle in base:
+            return key
+    return base.strip() or None
+
+
+def _format_transcript_markdown(transcript: str) -> str:
+    if not transcript:
+        return ""
+
+    normalized_lines = transcript.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    formatted_lines: List[str] = []
+    previous_speaker: Optional[str] = None
+
+    for raw_line in normalized_lines:
+        line = raw_line.rstrip()
+        match = _SPEAKER_PATTERN.match(line)
+        speaker_key: Optional[str] = None
+        if match:
+            speaker_key = _normalize_speaker(match.group(1))
+
+        if (
+            formatted_lines
+            and speaker_key
+            and previous_speaker
+            and speaker_key != previous_speaker
+            and formatted_lines[-1] != ""
+        ):
+            formatted_lines.append("")
+
+        formatted_lines.append(line)
+
+        if speaker_key:
+            previous_speaker = speaker_key
+
+    return "\n".join(formatted_lines).strip()
 
 
 HISTORY_TABLE_HEADERS: Tuple[str, ...] = (
@@ -237,6 +296,7 @@ def load_chat_entry(
             chat_id=None,
             chat=None,
             metadata_md="⚠️ Selecione um chat válido.",
+            summary_text="",
             preview_text="",
             evaluation_text="",
             comments_md="ℹ️ Nenhum comentário registrado ainda.",
@@ -288,6 +348,7 @@ def load_chat_entry(
                 pass
 
     chat["transcript_text"] = transcript_text
+    transcript_markdown = _format_transcript_markdown(transcript_text)
 
     metadata = _chat_metadata_md(chat)
     comments_md = _comments_markdown(chat.get("teacher_comments") or [])
@@ -311,14 +372,18 @@ def load_chat_entry(
                 else score_label
             )
     evaluation_text = display_eval
-    preview_text = transcript_text[:4000] if transcript_text else ""
+    preview_text = transcript_markdown if transcript_markdown else ""
     if not preview_text:
         preview_text = "(PDF indisponível ou sem conteúdo.)"
+
+    summary_text = chat.get("summary") or chat.get("summary_preview") or ""
+    summary_text = summary_text.strip()
 
     return ChatLoadResult(
         chat_id=chat.get("id"),
         chat=chat,
         metadata_md=metadata,
+        summary_text=summary_text,
         preview_text=preview_text,
         evaluation_text=evaluation_text,
         comments_md=comments_md,

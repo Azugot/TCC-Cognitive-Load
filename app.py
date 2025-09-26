@@ -31,6 +31,35 @@ from app.pages.student import (
 from app.pages.teacher import TeacherView, build_teacher_view
 
 
+APP_CSS = """
+.history-box,
+.history-preview {
+    max-height: 24rem;
+    overflow-y: auto;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--block-border-color, rgba(148, 163, 184, 0.35));
+    border-radius: var(--radius-lg, 0.75rem);
+    background-color: var(--block-background-fill, rgba(255, 255, 255, 0.6));
+}
+
+.history-box::-webkit-scrollbar,
+.history-preview::-webkit-scrollbar {
+    width: 8px;
+}
+
+.history-box::-webkit-scrollbar-thumb,
+.history-preview::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.45);
+    border-radius: 9999px;
+}
+
+.history-box:hover::-webkit-scrollbar-thumb,
+.history-preview:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.75);
+}
+"""
+
+
 def _logout_cleanup():
     return (
         gr.update(visible=False),
@@ -40,7 +69,7 @@ def _logout_cleanup():
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(theme=gr.themes.Default(), fill_height=True) as demo:
+    with gr.Blocks(theme=gr.themes.Default(), fill_height=True, css=APP_CSS) as demo:
         auth_state = gr.State({"isAuth": False, "username": None})
         docs_state = gr.State({})
         script_state = gr.State("Você é um assistente pedagógico. Aguarde configuração do usuário.")

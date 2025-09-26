@@ -77,7 +77,8 @@ class StudentViews:
     history_chat_dropdown: gr.Dropdown
     history_load_button: gr.Button
     history_metadata: gr.Markdown
-    history_preview: gr.Textbox
+    history_summary: gr.Markdown
+    history_preview: gr.Markdown
     history_download_button: gr.DownloadButton
     history_evaluation: gr.Textbox
     history_comments: gr.Markdown
@@ -164,10 +165,14 @@ def student_history_load_chat(chat_id, history_entries, current_download_path):
         else:
             gr.Warning(result.notice)
 
+    preview_value = result.preview_text or "ℹ️ Carregue um chat para visualizar a prévia."
+    summary_value = result.summary_text or "ℹ️ Este chat ainda não possui um resumo gerado."
+
     return (
         result.chat_id,
         gr.update(value=result.metadata_md),
-        gr.update(value=result.preview_text),
+        gr.update(value=summary_value),
+        gr.update(value=preview_value),
         gr.update(value=result.evaluation_text),
         gr.update(value=result.comments_md),
         result.transcript_text,
@@ -689,9 +694,19 @@ def build_student_views(
             with gr.Row():
                 stHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
                 stHistoryLoad = gr.Button("📄 Ver detalhes")
-            stHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
-            stHistoryPreview = gr.Textbox(
-                label="Prévia do PDF", lines=10, interactive=False, value=""
+            stHistoryMetadata = gr.Markdown(
+                "ℹ️ Selecione um chat para visualizar os detalhes.",
+                elem_classes=["history-box"],
+            )
+            gr.Markdown("#### Resumo da IA")
+            stHistorySummary = gr.Markdown(
+                "ℹ️ Selecione um chat para visualizar o resumo.",
+                elem_classes=["history-box"],
+            )
+            gr.Markdown("#### Prévia do PDF")
+            stHistoryPreview = gr.Markdown(
+                "ℹ️ Carregue um chat para visualizar a prévia.",
+                elem_classes=["history-box"],
             )
             with gr.Row():
                 stHistoryDownload = gr.DownloadButton(
@@ -703,7 +718,10 @@ def build_student_views(
                 interactive=False,
                 value="",
             )
-            stHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
+            stHistoryComments = gr.Markdown(
+                "ℹ️ Nenhum comentário registrado ainda.",
+                elem_classes=["history-box"],
+            )
             stHistoryNotice = gr.Markdown("")
 
     with gr.Column(visible=False) as viewStudentSetup:
@@ -866,6 +884,7 @@ def build_student_views(
         outputs=[
             student_history_selected,
             stHistoryMetadata,
+            stHistorySummary,
             stHistoryPreview,
             stHistoryEvaluation,
             stHistoryComments,
@@ -899,6 +918,7 @@ def build_student_views(
         outputs=[
             student_history_selected,
             stHistoryMetadata,
+            stHistorySummary,
             stHistoryPreview,
             stHistoryEvaluation,
             stHistoryComments,
@@ -925,6 +945,7 @@ def build_student_views(
         outputs=[
             student_history_selected,
             stHistoryMetadata,
+            stHistorySummary,
             stHistoryPreview,
             stHistoryEvaluation,
             stHistoryComments,
@@ -941,6 +962,7 @@ def build_student_views(
         outputs=[
             student_history_selected,
             stHistoryMetadata,
+            stHistorySummary,
             stHistoryPreview,
             stHistoryEvaluation,
             stHistoryComments,
@@ -1004,6 +1026,7 @@ def build_student_views(
         history_chat_dropdown=stHistoryChat,
         history_load_button=stHistoryLoad,
         history_metadata=stHistoryMetadata,
+        history_summary=stHistorySummary,
         history_preview=stHistoryPreview,
         history_download_button=stHistoryDownload,
         history_evaluation=stHistoryEvaluation,
