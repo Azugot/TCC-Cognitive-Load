@@ -414,7 +414,7 @@ def _fetch_users_map(
     try:
         response = (
             client.table(users_table)
-            .select("id,username,full_name,email,name")
+            .select("id,username,full_name,email,full_name")
             .in_("id", cleaned)
             .execute()
         )
