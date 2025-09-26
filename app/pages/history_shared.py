@@ -370,7 +370,7 @@ def load_chat_entry(
                 else score_label
             )
     evaluation_text = display_eval
-    preview_text = transcript_markdown[:4000] if transcript_markdown else ""
+    preview_text = transcript_markdown if transcript_markdown else ""
     if not preview_text:
         preview_text = "(PDF indisponível ou sem conteúdo.)"
 
