@@ -190,6 +190,7 @@ def build_app() -> gr.Blocks:
             inputs=[
                 auth_views.username,
                 auth_views.password,
+                auth_views.confirm_password,
                 auth_views.email,
                 auth_views.full_name,
                 auth_views.role_radio,
