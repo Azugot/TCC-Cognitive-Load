@@ -738,10 +738,18 @@ def build_student_views(
                 with gr.Row():
                     stBackToSetup = gr.Button("⬅️ Voltar para configuração da sala")
                     stEndChat = gr.Button("Encerrar Chat", variant="stop")
+                allow_file_upload = bool(VERTEX_CFG and not _vertex_err)
+                chat_placeholder = (
+                    "Digite sua mensagem ou envie um PDF..."
+                    if allow_file_upload
+                    else "Digite sua mensagem..."
+                )
+                chat_sources = ["upload"] if allow_file_upload else []
+
                 stChatInput = gr.MultimodalTextbox(
                     show_label=False,
-                    placeholder="Digite sua mensagem ou envie um PDF...",
-                    sources=["upload"],
+                    placeholder=chat_placeholder,
+                    sources=chat_sources,
                     interactive=True,
                 )
 
@@ -810,7 +818,7 @@ def build_student_views(
     ).then(_student_chat_enable, outputs=stChatInput)
 
     stClear.click(clearChat, outputs=stChatbot)
-    stExport.click(createChatPdf, inputs=[stChatbot, docs_state], outputs=gr.File())
+    stExport.click(createChatPdf, inputs=[stChatbot, docs_state])
 
     stEndChat.click(
         student_end_chat,
