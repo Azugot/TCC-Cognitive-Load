@@ -138,9 +138,12 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
 
 def _route_home(auth):
     is_auth = bool(auth and auth.get("isAuth") is True and auth.get("username"))
-    user = (auth or {}).get("username") or ""
+    login = (auth or {}).get("username") or ""
+    display_name = (auth or {}).get("full_name") or (auth or {}).get("display_name") or login
     role = (auth or {}).get("role", "aluno")
-    print(f"[NAV] _route_home: isAuth={is_auth} user='{user}' role='{role}'")
+    print(
+        f"[NAV] _route_home: isAuth={is_auth} user_login='{login}' display='{display_name}' role='{role}'"
+    )
     if not is_auth:
         return (
             gr.update(value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
@@ -150,14 +153,14 @@ def _route_home(auth):
             gr.update(value=""),
         )
     role = str(role).lower()
-    header_txt = f"### 👋 Olá, **{user}**! (perfil: {role})"
+    header_txt = f"### 👋 Olá, **{display_name}**! (perfil: {role})"
     if role == "admin":
         return (
             gr.update(value=header_txt, visible=True),
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=True),
-            gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{user}**"),
+            gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{display_name}**"),
         )
     else:
         return (
@@ -165,7 +168,7 @@ def _route_home(auth):
             gr.update(visible=False),
             gr.update(visible=True),
             gr.update(visible=False),
-            gr.update(value=f"## 🏠 Home — bem-vindo, **{user}**"),
+            gr.update(value=f"## 🏠 Home — bem-vindo, **{display_name}**"),
         )
 
 
@@ -291,12 +294,14 @@ def doLogin(username, password, authState):
 
     mapped_role = ROLE_DB_TO_PT.get((entry.role or "student").strip().lower(), "aluno")
     stored_username = (entry.username or uname or "").strip() or uname
-    display_name = entry.full_name or entry.username or entry.email or stored_username
+    full_name = (entry.full_name or "").strip()
+    display_name = full_name or entry.username or entry.email or stored_username
     authState = {
         "isAuth": True,
         "username": stored_username,
         "role": mapped_role,
         "user_id": entry.id,
+        "full_name": full_name or None,
         "display_name": display_name,
     }
     print(f"[AUTH] doLogin: sucesso -> {authState}")
@@ -311,7 +316,14 @@ def doLogin(username, password, authState):
 def _doLogout():
     print("[AUTH] logout")
     return (
-        {"isAuth": False, "username": None},
+        {
+            "isAuth": False,
+            "username": None,
+            "full_name": None,
+            "display_name": None,
+            "role": None,
+            "user_id": None,
+        },
         gr.update(value="### 👋 Bem-vindo! Faça login para continuar.", visible=True),
         gr.update(visible=True),
         gr.update(visible=False),

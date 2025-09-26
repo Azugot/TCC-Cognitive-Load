@@ -70,7 +70,16 @@ def _logout_cleanup():
 
 def build_app() -> gr.Blocks:
     with gr.Blocks(theme=gr.themes.Default(), fill_height=True, css=APP_CSS) as demo:
-        auth_state = gr.State({"isAuth": False, "username": None})
+        auth_state = gr.State(
+            {
+                "isAuth": False,
+                "username": None,
+                "full_name": None,
+                "display_name": None,
+                "role": None,
+                "user_id": None,
+            }
+        )
         docs_state = gr.State({})
         script_state = gr.State("Você é um assistente pedagógico. Aguarde configuração do usuário.")
         adv_state = gr.State({"temperature": 0.7, "top_p": 0.95, "top_k": 40, "max_tokens": 1024})

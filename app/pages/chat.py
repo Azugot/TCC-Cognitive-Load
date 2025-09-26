@@ -34,14 +34,15 @@ def addMessage(history, message, docsState, authState, currentChatId, chatsState
 
     chat_id = currentChatId or _mk_id("chat")
     if chat_id not in chatsState:
-        user = (authState or {}).get("username") or "anon"
+        login = (authState or {}).get("username") or "anon"
+        display_name = (authState or {}).get("full_name") or (authState or {}).get("display_name") or login
         role = (authState or {}).get("role", "aluno").lower()
         chatsState[chat_id] = {
             "id": chat_id,
-            "owner": user,
+            "owner": login,
             "role": role,
             "created_at": _now_ts(),
-            "title": f"Chat de {user}",
+            "title": f"Chat de {display_name}",
             "messages": [],
             "summary": "",
             "score": None,

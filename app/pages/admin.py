@@ -213,6 +213,12 @@ def admin_history_generate_evaluation(chat_id, transcript, history_entries):
 
 def admin_history_add_comment(chat_id, rating, comment_text, history_entries, auth):
     login = _teacher_username(auth) or _normalize_username((auth or {}).get("username"))
+    author_display = None
+    if isinstance(auth, dict):
+        author_display = (
+            auth.get("full_name") or auth.get("display_name") or auth.get("username")
+        )
+
     updated, comments_md, notice = append_chat_comment(
         chat_id,
         rating,
@@ -220,7 +226,7 @@ def admin_history_add_comment(chat_id, rating, comment_text, history_entries, au
         history_entries,
         author_id=_auth_user_id(auth),
         author_login=login,
-        author_name=(auth or {}).get("username"),
+        author_name=author_display,
     )
 
     if comments_md is None:

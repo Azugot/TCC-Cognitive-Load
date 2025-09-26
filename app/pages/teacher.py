@@ -159,6 +159,12 @@ def teacher_history_generate_evaluation(
 
 
 def teacher_history_add_comment(chat_id, rating, comment_text, history_entries, auth):
+    author_display = None
+    if isinstance(auth, dict):
+        author_display = (
+            auth.get("full_name") or auth.get("display_name") or auth.get("username")
+        )
+
     updated, comments_md, notice = append_chat_comment(
         chat_id,
         rating,
@@ -166,7 +172,7 @@ def teacher_history_add_comment(chat_id, rating, comment_text, history_entries, 
         history_entries,
         author_id=_auth_user_id(auth),
         author_login=_teacher_username(auth),
-        author_name=(auth or {}).get("username"),
+        author_name=author_display,
     )
 
     if comments_md is None:
