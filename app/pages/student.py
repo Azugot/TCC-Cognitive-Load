@@ -36,6 +36,7 @@ from app.pages.history_shared import (
     prepare_history_listing,
 )
 from app.utils import (
+    _class_member_labels,
     _get_class_by_id,
     _mk_id,
     _normalize_username,
@@ -204,8 +205,18 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
         return "⚠️ Selecione uma sala."
-    teachers = ", ".join(c["members"]["teachers"]) or "—"
-    students = ", ".join(c["members"]["students"]) or "—"
+    members = c.get("members", {}) or {}
+
+    teacher_ids = members.get("teachers", [])
+    teacher_labels = members.get("teacher_labels", {})
+    teachers = ", ".join(
+        teacher_labels.get(uid, uid) for uid in teacher_ids
+    ) or "—"
+
+    students = ", ".join(
+        _class_member_labels(c, "students", username_only=True)
+    ) or "—"
+
     theme = c.get("theme_name") or c["name"]
     subs = subjects_by_class.get(cls_id, [])
     subs_txt = ", ".join([s["name"] for s in subs if s.get("active", True)]) or "—"
@@ -216,6 +227,7 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
         f"- 🎓 **Alunos:** {students}\n"
         f"- 🧩 **Subtemas disponíveis:** {subs_txt}\n"
     )
+
 
 
 def _student_subtheme_choices(cls_id: Optional[str], subjects_by_class: Dict[str, Sequence[Dict[str, Any]]]):

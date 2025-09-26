@@ -31,6 +31,7 @@ from app.config import (
 )
 from app.utils import (
     _auth_user_id,
+    _class_member_labels,
     _get_class_by_id,
     _is_admin,
     _merge_notice,
@@ -213,6 +214,12 @@ def admin_history_generate_evaluation(chat_id, transcript, history_entries):
 
 def admin_history_add_comment(chat_id, rating, comment_text, history_entries, auth):
     login = _teacher_username(auth) or _normalize_username((auth or {}).get("username"))
+    author_display = None
+    if isinstance(auth, dict):
+        author_display = (
+            auth.get("full_name") or auth.get("display_name") or auth.get("username")
+        )
+
     updated, comments_md, notice = append_chat_comment(
         chat_id,
         rating,
@@ -220,7 +227,7 @@ def admin_history_add_comment(chat_id, rating, comment_text, history_entries, au
         history_entries,
         author_id=_auth_user_id(auth),
         author_login=login,
-        author_name=(auth or {}).get("username"),
+        author_name=author_display,
     )
 
     if comments_md is None:
@@ -266,20 +273,50 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
 
     normalized_classrooms = []
     for item in raw_classrooms:
-        teachers = {
-            _normalize_username(entry.get("login"))
-            for entry in item.get("teachers", [])
-            if entry.get("login")
-        }
-        students = {
-            _normalize_username(entry.get("login"))
-            for entry in item.get("students", [])
-            if entry.get("login")
-            and str(entry.get("status", "active")).lower() == "active"
-        }
+        teacher_map = {}
+        for entry in item.get("teachers", []) or []:
+            login = _normalize_username(entry.get("login"))
+            if not login:
+                continue
+            display = (
+                entry.get("full_name")
+                or entry.get("display_name")
+                or entry.get("name")
+                or ""
+            ).strip()
+            teacher_map[login] = display or login
+
+        student_map = {}
+        for entry in item.get("students", []) or []:
+            login = _normalize_username(entry.get("login"))
+            if not login:
+                continue
+            status = str(entry.get("status", "active")).lower()
+            if status != "active":
+                continue
+            display = (
+                entry.get("full_name")
+                or entry.get("display_name")
+                or entry.get("name")
+                or ""
+            ).strip()
+            student_map[login] = display or login
+
         owner_login = _normalize_username(item.get("owner_login"))
         if owner_login:
-            teachers.add(owner_login)
+            if owner_login not in teacher_map:
+                owner_label = None
+                owner_id = item.get("owner_id")
+                if owner_id:
+                    for entry in item.get("teachers", []) or []:
+                        if entry.get("user_id") == owner_id:
+                            owner_label = (entry.get("display_name") or "").strip()
+                            break
+                teacher_map[owner_login] = owner_label or teacher_map.get(owner_login) or owner_login
+
+        teacher_map = {login: label for login, label in teacher_map.items() if login}
+        student_map = {login: label for login, label in student_map.items() if login}
+
         normalized_classrooms.append(
             {
                 "id": item.get("id"),
@@ -290,8 +327,10 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                 "theme_locked": bool(item.get("theme_locked")),
                 "is_archived": bool(item.get("is_archived")),
                 "members": {
-                    "teachers": sorted(t for t in teachers if t),
-                    "students": sorted(students),
+                    "teachers": sorted(teacher_map),
+                    "students": sorted(student_map),
+                    "teacher_labels": teacher_map,
+                    "student_labels": student_map,
                 },
                 "owner": owner_login,
                 "owner_id": item.get("owner_id"),
@@ -500,12 +539,17 @@ def _render_members_md(cls_id, classrooms):
     c = next((x for x in (classrooms or []) if x["id"] == cls_id), None)
     if not c:
         return "⚠️ Selecione uma sala."
-    teachers = ", ".join(c["members"]["teachers"]) or "—"
-    students = ", ".join(c["members"]["students"]) or "—"
+    members = c.get("members", {}) or {}
+    teachers = ", ".join(
+        _class_member_labels(c, "teachers", include_usernames=True)
+    ) or "—"
+    students = ", ".join(
+        _class_member_labels(c, "students", include_usernames=True)
+    ) or "—"
     return (
         f"### Membros da sala `{c['name']}`\n"
-        f"- 👩‍🏫 Professores ({len(c['members']['teachers'])}): {teachers}\n"
-        f"- 🎓 Alunos ({len(c['members']['students'])}): {students}"
+        f"- 👩‍🏫 Professores ({len(members.get('teachers', []))}): {teachers}\n"
+        f"- 🎓 Alunos ({len(members.get('students', []))}): {students}"
     )
 
 

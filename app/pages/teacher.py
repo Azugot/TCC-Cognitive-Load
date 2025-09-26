@@ -37,6 +37,7 @@ from app.pages.history_shared import (
 )
 from app.utils import (
     _auth_user_id,
+    _class_member_labels,
     _get_class_by_id,
     _is_admin,
     _is_teacher,
@@ -159,6 +160,12 @@ def teacher_history_generate_evaluation(
 
 
 def teacher_history_add_comment(chat_id, rating, comment_text, history_entries, auth):
+    author_display = None
+    if isinstance(auth, dict):
+        author_display = (
+            auth.get("full_name") or auth.get("display_name") or auth.get("username")
+        )
+
     updated, comments_md, notice = append_chat_comment(
         chat_id,
         rating,
@@ -166,7 +173,7 @@ def teacher_history_add_comment(chat_id, rating, comment_text, history_entries, 
         history_entries,
         author_id=_auth_user_id(auth),
         author_login=_teacher_username(auth),
-        author_name=(auth or {}).get("username"),
+        author_name=author_display,
     )
 
     if comments_md is None:
@@ -208,8 +215,27 @@ def _render_teacher_members_md(cls_id, classrooms):
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
         return "⚠️ Selecione uma de suas salas."
-    s = c["members"]["students"]
-    return f"### Alunos da sala `{c['name']}`\n- 🎓 {len(s)} aluno(s): " + (", ".join(s) if s else "—")
+    members = c.get("members", {}) or {}
+    teacher_ids = members.get("teachers", [])
+    student_ids = members.get("students", [])
+    
+    teacher_labels = members.get("teacher_labels", {})
+    student_labels = members.get("student_labels", {})
+    
+    teachers = ", ".join(
+        f"{teacher_labels.get(uid, uid)} (u:{uid})" for uid in teacher_ids
+    ) or "—"
+    
+    students = ", ".join(
+        f"{student_labels.get(uid, uid)} (u:{uid})" for uid in student_ids
+    ) or "—"
+    
+    return (
+        f"### Membros da sala `{c['name']}`\n"
+        f"- 👩‍🏫 Professores ({len(teacher_ids)}): {teachers}\n"
+        f"- 🎓 Alunos ({len(student_ids)}): {students}"
+    )
+
 
 
 def _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class):
