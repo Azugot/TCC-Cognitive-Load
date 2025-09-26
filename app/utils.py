@@ -63,6 +63,7 @@ def _class_member_labels(
     group: str,
     *,
     include_usernames: bool = False,
+    username_only: bool = False,
 ) -> List[str]:
     """Return formatted member labels for the requested classroom group."""
 
@@ -82,7 +83,9 @@ def _class_member_labels(
         raw_label = labels_map.get(key) or labels_map.get(login) or labels_map.get(normalized) or ""
         base_label = raw_label.strip() if isinstance(raw_label, str) else ""
 
-        if include_usernames and key:
+        if username_only and key:
+            formatted = key
+        elif include_usernames and key:
             if base_label and base_label.lower() != key:
                 formatted = f"{base_label} (u: {key})"
             else:

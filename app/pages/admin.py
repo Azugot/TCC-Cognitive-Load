@@ -278,7 +278,12 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
             login = _normalize_username(entry.get("login"))
             if not login:
                 continue
-            display = (entry.get("display_name") or "").strip()
+            display = (
+                entry.get("full_name")
+                or entry.get("display_name")
+                or entry.get("name")
+                or ""
+            ).strip()
             teacher_map[login] = display or login
 
         student_map = {}
@@ -289,7 +294,12 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
             status = str(entry.get("status", "active")).lower()
             if status != "active":
                 continue
-            display = (entry.get("display_name") or "").strip()
+            display = (
+                entry.get("full_name")
+                or entry.get("display_name")
+                or entry.get("name")
+                or ""
+            ).strip()
             student_map[login] = display or login
 
         owner_login = _normalize_username(item.get("owner_login"))

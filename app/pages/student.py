@@ -206,7 +206,9 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
     if not c:
         return "⚠️ Selecione uma sala."
     teachers = ", ".join(_class_member_labels(c, "teachers")) or "—"
-    students = ", ".join(_class_member_labels(c, "students")) or "—"
+    students = ", ".join(
+        _class_member_labels(c, "students", username_only=True)
+    ) or "—"
     theme = c.get("theme_name") or c["name"]
     subs = subjects_by_class.get(cls_id, [])
     subs_txt = ", ".join([s["name"] for s in subs if s.get("active", True)]) or "—"
