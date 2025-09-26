@@ -34,6 +34,7 @@ class AuthViews:
     auth_mode: gr.Radio
     username: gr.Textbox
     password: gr.Textbox
+    confirm_password: gr.Textbox
     email: gr.Textbox
     full_name: gr.Textbox
     role_radio: gr.Radio
@@ -72,6 +73,12 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         with gr.Row():
             username = gr.Textbox(label="Usuário", placeholder="ex: augusto")
             password = gr.Textbox(label="Senha", type="password", placeholder="••••••••")
+            confirmPassword = gr.Textbox(
+                label="Confirmar senha",
+                type="password",
+                placeholder="Repita a senha",
+                visible=False,
+            )
         with gr.Row(visible=False) as registerRow:
             email = gr.Textbox(label="E-mail", placeholder="ex: nome@dominio.com")
             fullName = gr.Textbox(label="Nome completo", placeholder="ex: Maria Silva")
@@ -98,7 +105,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
     authMode.change(
         switch_auth_mode,
         inputs=authMode,
-        outputs=[registerRow, registerRoleRow, btnLogin, btnRegister, loginMsg],
+        outputs=[registerRow, registerRoleRow, btnLogin, btnRegister, confirmPassword, loginMsg],
     )
 
     return AuthViews(
@@ -108,6 +115,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         auth_mode=authMode,
         username=username,
         password=password,
+        confirm_password=confirmPassword,
         email=email,
         full_name=fullName,
         role_radio=roleRadio,
@@ -195,19 +203,24 @@ def switch_auth_mode(mode):
         gr.update(visible=is_register),
         gr.update(visible=not is_register),
         gr.update(visible=is_register),
+        gr.update(visible=is_register, value=""),
         gr.update(value=""),
     )
 
 
-def doRegister(username, password, email, full_name, role, authState):
+def doRegister(username, password, confirm_password, email, full_name, role, authState):
     raw_username = (username or "").strip()
     raw_email = (email or "").strip()
     login_email = raw_email.lower()
     name = (full_name or "").strip()
     pw = (password or "").strip()
+    confirm_pw = (confirm_password or "").strip()
     print(f"[AUTH] doRegister: username='{raw_username.lower()}' email='{login_email}' role='{role}'")
-    if not raw_username or not login_email or not name or not pw:
-        return gr.update(value="⚠️ Informe usuário, e-mail, nome e senha."), authState
+    if not raw_username or not login_email or not name or not pw or not confirm_pw:
+        return gr.update(value="⚠️ Informe usuário, e-mail, nome, senha e confirmação."), authState
+
+    if pw != confirm_pw:
+        return gr.update(value="⚠️ As senhas informadas não coincidem."), authState
 
     role_pt = (role or "aluno").strip().lower() or "aluno"
     supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
@@ -222,6 +235,8 @@ def doRegister(username, password, email, full_name, role, authState):
             login=login_email,
             password_hash=_hashPw(pw),
             role=supabase_role,
+            username=raw_username,
+            full_name=display_name,
             display_name=display_name,
         )
         print(f"[AUTH] doRegister: Supabase created -> {created}")
@@ -239,7 +254,7 @@ def doRegister(username, password, email, full_name, role, authState):
         print(f"[AUTH] doRegister: erro inesperado -> {exc}")
         return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
 
-    return gr.update(value="✅ Usuário registrado! Faça login."), authState
+    return gr.update(value="✅ Usuário registrado! Faça login com suas credenciais."), authState
 
 
 def doLogin(username, password, authState):
@@ -275,15 +290,22 @@ def doLogin(username, password, authState):
         return gr.update(value="❌ Usuário ou senha incorretos."), authState
 
     mapped_role = ROLE_DB_TO_PT.get((entry.role or "student").strip().lower(), "aluno")
+    stored_username = (entry.username or uname or "").strip() or uname
+    display_name = entry.full_name or entry.username or entry.email or stored_username
     authState = {
         "isAuth": True,
-        "username": uname,
+        "username": stored_username,
         "role": mapped_role,
         "user_id": entry.id,
-        "display_name": entry.name or entry.email,
+        "display_name": display_name,
     }
     print(f"[AUTH] doLogin: sucesso -> {authState}")
-    return gr.update(value=f"✅ Bem-vindo, **{uname}** (perfil: {mapped_role})."), authState
+    return (
+        gr.update(
+            value=f"✅ Bem-vindo, **{display_name}** (usuário: {stored_username} · perfil: {mapped_role})."
+        ),
+        authState,
+    )
 
 
 def _doLogout():
@@ -325,7 +347,7 @@ def listStudents(auth):
 
     students = []
     for record in records:
-        label = record.name or record.email or record.id
+        label = record.full_name or record.username or record.email or record.id
         if label:
             students.append(label)
 
