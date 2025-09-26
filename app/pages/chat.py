@@ -216,6 +216,13 @@ def build_studio_page(
                         topK = gr.Slider(0, 50, value=40, step=1, label="Top-k")
                         maxTokens = gr.Slider(64, 4096, value=1024, step=32, label="Max tokens (saída)")
                         applyAdv = gr.Button("Aplicar opções avançadas")
+                        gr.Markdown(
+                            "**Notas sobre os hiperparâmetros**\n"
+                            "¹ Temperatura: controla a aleatoriedade das respostas. Valores maiores geram respostas mais criativas, enquanto valores menores priorizam segurança e consistência.\n"
+                            "² Top-p: define a fração acumulada de probabilidade considerada na geração. Reduzir o valor limita o vocabulário às palavras mais prováveis.\n"
+                            "³ Top-k: especifica quantas palavras mais prováveis podem ser escolhidas a cada passo. Valores pequenos tornam a saída mais previsível.\n"
+                            "⁴ Max tokens (saída): limita o tamanho máximo da resposta do modelo. Aumentar o valor permite respostas mais longas."
+                        )
                         applyAdv.click(
                             updateAdvOptions,
                             inputs=[temperature, topP, topK, maxTokens, adv_state],
