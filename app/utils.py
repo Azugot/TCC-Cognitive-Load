@@ -68,33 +68,51 @@ def _class_member_labels(
     """Return formatted member labels for the requested classroom group."""
 
     members = (classroom or {}).get("members", {}) or {}
-    logins = list(members.get(group, []) or [])
+    member_ids = list(members.get(group, []) or [])
     labels_map = members.get(f"{group}_labels", {}) or {}
+    usernames_map = members.get(f"{group}_usernames", {}) or {}
 
     seen = set()
     results = []
-    for login in logins:
-        normalized = _normalize_username(login)
-        key = normalized or login
-        if not key or key in seen:
+    for member in member_ids:
+        identifier = str(member or "").strip()
+        if not identifier or identifier in seen:
             continue
-        seen.add(key)
+        seen.add(identifier)
 
-        raw_label = labels_map.get(key) or labels_map.get(login) or labels_map.get(normalized) or ""
+        raw_label = (
+            labels_map.get(identifier)
+            or labels_map.get(member)
+            or ""
+        )
         base_label = raw_label.strip() if isinstance(raw_label, str) else ""
 
-        if username_only and key:
-            formatted = key
-        elif include_usernames and key:
-            if base_label and base_label.lower() != key:
-                formatted = f"{base_label} (u: {key})"
+        username_value = (
+            usernames_map.get(identifier)
+            or usernames_map.get(member)
+            or ""
+        )
+        username_label = username_value.strip() if isinstance(username_value, str) else ""
+        normalized_username = _normalize_username(username_label) if username_label else ""
+        display_username = username_label or normalized_username
+
+        if username_only:
+            formatted = display_username or identifier
+        elif include_usernames:
+            compare_label = base_label.lower() if base_label else ""
+            compare_username = (display_username or "").lower()
+            if base_label and display_username and compare_label != compare_username:
+                formatted = f"{base_label} (u: {display_username})"
+            elif display_username:
+                formatted = display_username
             else:
-                formatted = key
+                formatted = base_label or identifier
         else:
-            formatted = base_label or key
+            formatted = base_label or display_username or identifier
 
         if formatted:
-            results.append((formatted.lower(), formatted))
+            sort_key = (base_label or display_username or identifier).lower()
+            results.append((sort_key, formatted))
 
     results.sort(key=lambda item: item[0])
     return [label for _, label in results]

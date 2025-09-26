@@ -109,6 +109,7 @@ def fetch_classroom_domain(
         entry = {
             "user_id": tid,
             "login": info.get("login"),
+            "username": info.get("username"),
             "display_name": info.get("display_name"),
             "role_label": row.get("role_label"),
         }
@@ -124,6 +125,7 @@ def fetch_classroom_domain(
         entry = {
             "user_id": sid,
             "login": info.get("login"),
+            "username": info.get("username"),
             "display_name": info.get("display_name"),
             "status": row.get("status"),
         }
@@ -160,15 +162,22 @@ def fetch_classroom_domain(
         student_entries = students_by_class.get(cid, [])
         owner_login = None
         owner_id = None
+        owner_username = None
         for entry in teacher_entries:
             if (entry.get("role_label") or "").lower() == "owner":
                 owner_id = entry.get("user_id")
                 owner_login = entry.get("login")
+                owner_username = entry.get("username")
                 break
         if not owner_login and raw.get("created_by"):
             creator_info = user_map.get(raw.get("created_by"))
             if creator_info:
                 owner_login = creator_info.get("login") or owner_login
+                owner_username = (
+                    creator_info.get("username")
+                    or creator_info.get("login")
+                    or owner_username
+                )
 
         classrooms.append(
             {
@@ -182,6 +191,7 @@ def fetch_classroom_domain(
                 "created_by": raw.get("created_by"),
                 "owner_id": owner_id,
                 "owner_login": owner_login,
+                "owner_username": owner_username,
                 "teachers": teacher_entries,
                 "students": student_entries,
             }

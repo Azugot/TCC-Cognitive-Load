@@ -36,12 +36,12 @@ from app.pages.history_shared import (
     prepare_history_listing,
 )
 from app.utils import (
+    _auth_user_id,
     _class_member_labels,
     _get_class_by_id,
     _mk_id,
     _normalize_username,
     _now_ts,
-    _student_username,
     _user_role,
 )
 
@@ -192,11 +192,11 @@ def student_history_prepare_download(download_path):
 
 
 def _student_classes(auth: Optional[Dict[str, Any]], classrooms: Iterable[Dict[str, Any]]):
-    me = _student_username(auth)
+    me_id = _auth_user_id(auth)
     out = []
     for c in classrooms or []:
         students = (c.get("members", {}) or {}).get("students", []) or []
-        if me and me in [s.strip().lower() for s in students]:
+        if me_id and me_id in students:
             out.append(c)
     return out
 
