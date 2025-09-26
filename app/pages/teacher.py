@@ -129,10 +129,12 @@ def teacher_history_load_chat(
 
     manual_value = 0
     preview_value = result.preview_text or "ℹ️ Carregue um chat para visualizar a prévia."
+    summary_value = result.summary_text or "ℹ️ Este chat ainda não possui um resumo gerado."
 
     return (
         result.chat_id,
         gr.update(value=result.metadata_md),
+        gr.update(value=summary_value),
         gr.update(value=preview_value),
         gr.update(value=result.evaluation_text),
         gr.update(value=manual_value),
@@ -741,11 +743,19 @@ def build_teacher_view(
             with gr.Row():
                 tHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
                 tHistoryLoad = gr.Button("📄 Ver detalhes")
-            tHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
+            tHistoryMetadata = gr.Markdown(
+                "ℹ️ Selecione um chat para visualizar os detalhes.",
+                elem_classes=["history-box"],
+            )
+            gr.Markdown("#### Resumo da IA")
+            tHistorySummary = gr.Markdown(
+                "ℹ️ Selecione um chat para visualizar o resumo.",
+                elem_classes=["history-box"],
+            )
             gr.Markdown("#### Prévia do PDF")
             tHistoryPreview = gr.Markdown(
                 "ℹ️ Carregue um chat para visualizar a prévia.",
-                elem_classes=["history-preview"],
+                elem_classes=["history-box"],
             )
             with gr.Row():
                 tHistoryDownload = gr.DownloadButton(
@@ -765,7 +775,10 @@ def build_teacher_view(
                 label="Avaliação manual (0-100)",
             )
             gr.Markdown("A nota selecionada será registrada junto com o comentário enviado.")
-            tHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
+            tHistoryComments = gr.Markdown(
+                "ℹ️ Nenhum comentário registrado ainda.",
+                elem_classes=["history-box"],
+            )
             tCommentInput = gr.Textbox(
                 label="Novo comentário",
                 placeholder="Registre observações para outros professores",
@@ -891,6 +904,7 @@ def build_teacher_view(
         outputs=[
             teacher_history_selected,
             tHistoryMetadata,
+            tHistorySummary,
             tHistoryPreview,
             tHistoryEvaluation,
             tManualRating,
@@ -922,6 +936,7 @@ def build_teacher_view(
         outputs=[
             teacher_history_selected,
             tHistoryMetadata,
+            tHistorySummary,
             tHistoryPreview,
             tHistoryEvaluation,
             tManualRating,
@@ -939,6 +954,7 @@ def build_teacher_view(
         outputs=[
             teacher_history_selected,
             tHistoryMetadata,
+            tHistorySummary,
             tHistoryPreview,
             tHistoryEvaluation,
             tManualRating,
@@ -956,6 +972,7 @@ def build_teacher_view(
         outputs=[
             teacher_history_selected,
             tHistoryMetadata,
+            tHistorySummary,
             tHistoryPreview,
             tHistoryEvaluation,
             tManualRating,

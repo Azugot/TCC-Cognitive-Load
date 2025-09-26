@@ -186,10 +186,12 @@ def admin_history_load_chat(chat_id, history_entries, current_download_path):
 
     manual_value = 0
     preview_value = result.preview_text or "ℹ️ Carregue um chat para visualizar a prévia."
+    summary_value = result.summary_text or "ℹ️ Este chat ainda não possui um resumo gerado."
 
     return (
         result.chat_id,
         gr.update(value=result.metadata_md),
+        gr.update(value=summary_value),
         gr.update(value=preview_value),
         gr.update(value=result.evaluation_text),
         gr.update(value=manual_value),
@@ -951,11 +953,19 @@ def build_admin_views(
         with gr.Row():
             adHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
             adHistoryLoad = gr.Button("📄 Ver detalhes")
-        adHistoryMetadata = gr.Markdown("ℹ️ Selecione um chat para visualizar os detalhes.")
+        adHistoryMetadata = gr.Markdown(
+            "ℹ️ Selecione um chat para visualizar os detalhes.",
+            elem_classes=["history-box"],
+        )
+        gr.Markdown("#### Resumo da IA")
+        adHistorySummary = gr.Markdown(
+            "ℹ️ Selecione um chat para visualizar o resumo.",
+            elem_classes=["history-box"],
+        )
         gr.Markdown("#### Prévia do PDF")
         adHistoryPreview = gr.Markdown(
             "ℹ️ Carregue um chat para visualizar a prévia.",
-            elem_classes=["history-preview"],
+            elem_classes=["history-box"],
         )
         with gr.Row():
             adHistoryDownload = gr.DownloadButton("⬇️ Baixar PDF", visible=False, variant="secondary")
@@ -965,7 +975,10 @@ def build_admin_views(
         )
         adManualRating = gr.Slider(0, 100, value=0, step=1, label="Avaliação manual (0-100)")
         gr.Markdown("A nota selecionada será registrada junto ao comentário enviado.")
-        adHistoryComments = gr.Markdown("ℹ️ Nenhum comentário registrado ainda.")
+        adHistoryComments = gr.Markdown(
+            "ℹ️ Nenhum comentário registrado ainda.",
+            elem_classes=["history-box"],
+        )
         adCommentInput = gr.Textbox(
             label="Novo comentário",
             placeholder="Compartilhe observações com os professores",
@@ -1151,6 +1164,7 @@ def build_admin_views(
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
+            adHistorySummary,
             adHistoryPreview,
             adHistoryEvaluation,
             adManualRating,
@@ -1178,6 +1192,7 @@ def build_admin_views(
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
+            adHistorySummary,
             adHistoryPreview,
             adHistoryEvaluation,
             adManualRating,
@@ -1195,6 +1210,7 @@ def build_admin_views(
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
+            adHistorySummary,
             adHistoryPreview,
             adHistoryEvaluation,
             adManualRating,
@@ -1212,6 +1228,7 @@ def build_admin_views(
         outputs=[
             admin_history_selected,
             adHistoryMetadata,
+            adHistorySummary,
             adHistoryPreview,
             adHistoryEvaluation,
             adManualRating,

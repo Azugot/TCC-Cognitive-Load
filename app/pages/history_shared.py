@@ -32,6 +32,7 @@ class ChatLoadResult:
     chat_id: Optional[str]
     chat: Optional[Dict[str, Any]]
     metadata_md: str
+    summary_text: str
     preview_text: str
     evaluation_text: str
     comments_md: str
@@ -295,6 +296,7 @@ def load_chat_entry(
             chat_id=None,
             chat=None,
             metadata_md="⚠️ Selecione um chat válido.",
+            summary_text="",
             preview_text="",
             evaluation_text="",
             comments_md="ℹ️ Nenhum comentário registrado ainda.",
@@ -374,10 +376,14 @@ def load_chat_entry(
     if not preview_text:
         preview_text = "(PDF indisponível ou sem conteúdo.)"
 
+    summary_text = chat.get("summary") or chat.get("summary_preview") or ""
+    summary_text = summary_text.strip()
+
     return ChatLoadResult(
         chat_id=chat.get("id"),
         chat=chat,
         metadata_md=metadata,
+        summary_text=summary_text,
         preview_text=preview_text,
         evaluation_text=evaluation_text,
         comments_md=comments_md,

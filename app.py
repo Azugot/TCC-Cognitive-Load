@@ -32,6 +32,7 @@ from app.pages.teacher import TeacherView, build_teacher_view
 
 
 APP_CSS = """
+.history-box,
 .history-preview {
     max-height: 24rem;
     overflow-y: auto;
@@ -41,15 +42,18 @@ APP_CSS = """
     background-color: var(--block-background-fill, rgba(255, 255, 255, 0.6));
 }
 
+.history-box::-webkit-scrollbar,
 .history-preview::-webkit-scrollbar {
     width: 8px;
 }
 
+.history-box::-webkit-scrollbar-thumb,
 .history-preview::-webkit-scrollbar-thumb {
     background-color: rgba(100, 116, 139, 0.45);
     border-radius: 9999px;
 }
 
+.history-box:hover::-webkit-scrollbar-thumb,
 .history-preview:hover::-webkit-scrollbar-thumb {
     background-color: rgba(100, 116, 139, 0.75);
 }
