@@ -289,7 +289,7 @@ def build_studio_page(
         botMsg.then(lambda: gr.update(interactive=True), outputs=chatInput)
 
         clearBtn.click(clearChat, outputs=chatbot)
-        exportBtn.click(createChatPdf, inputs=[chatbot, docs_state], outputs=gr.File())
+        exportBtn.click(createChatPdf, inputs=[chatbot, docs_state])
 
     return StudioView(
         container=viewStudio,

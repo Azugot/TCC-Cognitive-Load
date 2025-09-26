@@ -829,7 +829,7 @@ def build_student_views(
     ).then(_student_chat_enable, outputs=stChatInput)
 
     stClear.click(clearChat, outputs=stChatbot)
-    stExport.click(createChatPdf, inputs=[stChatbot, docs_state], outputs=gr.File())
+    stExport.click(createChatPdf, inputs=[stChatbot, docs_state])
 
     stEndChat.click(
         student_end_chat,
