@@ -626,6 +626,35 @@ def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
     if not record or not record.id:
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
+    members = classroom.get("members") or {}
+    student_ids = {str(uid) for uid in (members.get("students") or []) if uid}
+    student_usernames = members.get("student_usernames") or {}
+
+    is_member = False
+    if record.id and str(record.id) in student_ids:
+        is_member = True
+    else:
+        normalized_values = {
+            _normalize_username(value): str(uid)
+            for uid, value in student_usernames.items()
+            if uid and value
+        }
+        candidate_usernames = {
+            uname_norm,
+            _normalize_username(getattr(record, "username", None)),
+            _normalize_username(getattr(record, "email", None)),
+        }
+        is_member = any(
+            candidate and candidate in normalized_values for candidate in candidate_usernames
+        )
+
+    if not is_member:
+        md = _merge_notice(
+            _render_teacher_members_md(cls_id, classrooms),
+            "⚠️ Usuário não é aluno desta sala.",
+        )
+        return classrooms, subjects, md
+
     try:
         remove_classroom_student(
             SUPABASE_URL,
