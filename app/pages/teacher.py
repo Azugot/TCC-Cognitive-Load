@@ -56,8 +56,11 @@ class TeacherView:
     back_button: gr.Button
 
 
-def _normalize_classroom_filter(
-    raw_filter: Optional[str], classrooms: Optional[Iterable[Dict[str, Any]]]
+def _resolve_classroom_filter(
+    raw_filter: Optional[str],
+    auth: Optional[Dict[str, Any]],
+    classrooms: Optional[Iterable[Dict[str, Any]]],
+    chats: Optional[Iterable[Dict[str, Any]]],
 ) -> str:
     """Return the classroom ID associated with the raw dropdown value."""
 
@@ -65,24 +68,38 @@ def _normalize_classroom_filter(
     if not value:
         return ""
 
-    if not classrooms:
-        return value
+    def _match_entries(
+        entries: Iterable[Dict[str, Any]],
+        *,
+        id_key: str = "id",
+        name_key: str = "name",
+    ) -> str:
+        # First try to match by the raw identifier returned by the dropdown.
+        for entry in entries:
+            cid = str((entry or {}).get(id_key) or "").strip()
+            if cid and value == cid:
+                return cid
 
-    # If the dropdown already provided an ID, return it immediately.
-    for entry in classrooms:
-        cid = str(entry.get("id") or "").strip()
-        if cid and value == cid:
-            return cid
+        lowered = value.lower()
+        for entry in entries:
+            data = entry or {}
+            cid = str(data.get(id_key) or "").strip()
+            name = str(data.get(name_key) or "").strip()
+            if cid and name and name.lower() == lowered:
+                return cid
 
-    # Fall back to matching by classroom name when the component returns labels.
-    lowered = value.lower()
-    for entry in classrooms:
-        name = str(entry.get("name") or "").strip()
-        cid = str(entry.get("id") or "").strip()
-        if name and cid and name.lower() == lowered:
-            return cid
+        return ""
 
-    return value
+    teacher_classes = _teacher_classes(auth, classrooms or [])
+    resolved = _match_entries(teacher_classes)
+    if resolved:
+        return resolved
+
+    resolved = _match_entries(chats or [], id_key="classroom_id", name_key="classroom_name")
+    if resolved:
+        return resolved
+
+    return ""
 
 
 def teacher_history_refresh(auth, classroom_filter, classrooms=None):
@@ -120,7 +137,12 @@ def teacher_history_refresh(auth, classroom_filter, classrooms=None):
             None,
         )
 
-    classroom_filter = _normalize_classroom_filter(classroom_filter, classrooms)
+    classroom_filter = _resolve_classroom_filter(
+        classroom_filter,
+        auth,
+        classrooms,
+        chats,
+    )
 
     def _filter_chat(chat: Dict[str, Any]) -> bool:
         return str(chat.get("classroom_id")) == classroom_filter
