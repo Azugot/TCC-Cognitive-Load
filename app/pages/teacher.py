@@ -54,6 +54,7 @@ class TeacherView:
     notice: gr.Markdown
     select_dropdown: gr.Dropdown
     back_button: gr.Button
+    history_class_dropdown: gr.Dropdown
 
 
 def _resolve_classroom_filter(
@@ -262,6 +263,12 @@ def _teacher_history_dropdown(auth, classrooms, current_value=None):
     valid_ids = [value for _, value in choices]
     value = current_value if current_value in valid_ids else None
     return gr.update(choices=choices, value=value)
+
+
+def teacher_history_dropdown(auth, classrooms, current_value=None):
+    """Public helper to refresh the teacher history classroom filter."""
+
+    return _teacher_history_dropdown(auth, classrooms, current_value)
 
 
 def _render_teacher_members_md(cls_id, classrooms):
@@ -1111,12 +1118,14 @@ def build_teacher_view(
         notice=teacherNotice,
         select_dropdown=tSelectClass,
         back_button=btnTeacherBack,
+        history_class_dropdown=tHistoryClass,
     )
 
 
 __all__ = [
     "TeacherView",
     "build_teacher_view",
+    "teacher_history_dropdown",
     "teacher_add_classroom",
     "teacher_refresh",
     "teacher_add_teacher",

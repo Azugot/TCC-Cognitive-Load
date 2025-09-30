@@ -28,7 +28,11 @@ from app.pages.student import (
     student_rooms_back,
     student_rooms_refresh,
 )
-from app.pages.teacher import TeacherView, build_teacher_view
+from app.pages.teacher import (
+    TeacherView,
+    build_teacher_view,
+    teacher_history_dropdown,
+)
 
 
 APP_CSS = """
@@ -152,6 +156,10 @@ def build_app() -> gr.Blocks:
             lambda: (gr.update(visible=False), gr.update(visible=True)),
             inputs=None,
             outputs=[auth_views.view_home, teacher_view.container],
+        ).then(
+            teacher_history_dropdown,
+            inputs=[auth_state, classrooms_state, teacher_view.history_class_dropdown],
+            outputs=teacher_view.history_class_dropdown,
         )
 
         auth_views.btn_student_rooms.click(
@@ -221,6 +229,10 @@ def build_app() -> gr.Blocks:
             _sync_domain_after_auth,
             inputs=[auth_state, classrooms_state, subjects_state],
             outputs=[classrooms_state, subjects_state],
+        ).then(
+            teacher_history_dropdown,
+            inputs=[auth_state, classrooms_state, teacher_view.history_class_dropdown],
+            outputs=teacher_view.history_class_dropdown,
         )
 
         auth_views.btn_register.click(
@@ -257,6 +269,10 @@ def build_app() -> gr.Blocks:
             _sync_domain_after_auth,
             inputs=[auth_state, classrooms_state, subjects_state],
             outputs=[classrooms_state, subjects_state],
+        ).then(
+            teacher_history_dropdown,
+            inputs=[auth_state, classrooms_state, teacher_view.history_class_dropdown],
+            outputs=teacher_view.history_class_dropdown,
         )
 
         # Logout handling ---------------------------------------------------
