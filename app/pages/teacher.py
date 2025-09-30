@@ -56,7 +56,36 @@ class TeacherView:
     back_button: gr.Button
 
 
-def teacher_history_refresh(auth, classroom_filter):
+def _normalize_classroom_filter(
+    raw_filter: Optional[str], classrooms: Optional[Iterable[Dict[str, Any]]]
+) -> str:
+    """Return the classroom ID associated with the raw dropdown value."""
+
+    value = str(raw_filter or "").strip()
+    if not value:
+        return ""
+
+    if not classrooms:
+        return value
+
+    # If the dropdown already provided an ID, return it immediately.
+    for entry in classrooms:
+        cid = str(entry.get("id") or "").strip()
+        if cid and value == cid:
+            return cid
+
+    # Fall back to matching by classroom name when the component returns labels.
+    lowered = value.lower()
+    for entry in classrooms:
+        name = str(entry.get("name") or "").strip()
+        cid = str(entry.get("id") or "").strip()
+        if name and cid and name.lower() == lowered:
+            return cid
+
+    return value
+
+
+def teacher_history_refresh(auth, classroom_filter, classrooms=None):
     teacher_id = _auth_user_id(auth)
     if not teacher_id:
         return (
@@ -91,7 +120,7 @@ def teacher_history_refresh(auth, classroom_filter):
             None,
         )
 
-    classroom_filter = (classroom_filter or "").strip()
+    classroom_filter = _normalize_classroom_filter(classroom_filter, classrooms)
 
     def _filter_chat(chat: Dict[str, Any]) -> bool:
         return str(chat.get("classroom_id")) == classroom_filter
@@ -190,11 +219,13 @@ def teacher_history_prepare_download(download_path):
     return None
 
 def _teacher_classes(auth, classrooms: Iterable[Dict[str, Any]]):
-    me = _teacher_username(auth)
+    if _is_admin(auth):
+        return list(classrooms or [])
+    me_id = _auth_user_id(auth)
     out = []
     for c in classrooms or []:
         teachers = (c.get("members", {}) or {}).get("teachers", []) or []
-        if me and me in [t.strip().lower() for t in teachers]:
+        if me_id and me_id in teachers:
             out.append(c)
     return out
 
@@ -218,18 +249,30 @@ def _render_teacher_members_md(cls_id, classrooms):
     members = c.get("members", {}) or {}
     teacher_ids = members.get("teachers", [])
     student_ids = members.get("students", [])
-    
+
     teacher_labels = members.get("teacher_labels", {})
     student_labels = members.get("student_labels", {})
-    
+    teacher_usernames = members.get("teacher_usernames", {})
+    student_usernames = members.get("student_usernames", {})
+
     teachers = ", ".join(
-        f"{teacher_labels.get(uid, uid)} (u:{uid})" for uid in teacher_ids
+        (
+            f"{teacher_labels.get(uid, uid)} (u:{teacher_usernames.get(uid, uid)})"
+            if teacher_usernames.get(uid)
+            else teacher_labels.get(uid, uid)
+        )
+        for uid in teacher_ids
     ) or "—"
-    
+
     students = ", ".join(
-        f"{student_labels.get(uid, uid)} (u:{uid})" for uid in student_ids
+        (
+            f"{student_labels.get(uid, uid)} (u:{student_usernames.get(uid, uid)})"
+            if student_usernames.get(uid)
+            else student_labels.get(uid, uid)
+        )
+        for uid in student_ids
     ) or "—"
-    
+
     return (
         f"### Membros da sala `{c['name']}`\n"
         f"- 👩‍🏫 Professores ({len(teacher_ids)}): {teachers}\n"
@@ -289,12 +332,12 @@ def teacher_save_params(
     subjects,
     auth,
 ):
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
         return classrooms, subjects, "⚠️ Sala não encontrada."
-    teachers = [t.strip().lower() for t in c["members"]["teachers"]]
-    if me not in teachers and not _is_admin(auth):
+    teachers = list((c.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teachers and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
     cfg = {
@@ -341,23 +384,23 @@ def _teacher_classrooms_outputs(auth, classrooms, notice=""):
 
 
 def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     uname_norm = _normalize_username(uname)
     if not cls_id or not uname_norm:
         return classrooms, subjects, "⚠️ Informe sala e username."
-    if not me and not _is_admin(auth):
+    if not me_id and not _is_admin(auth):
         return classrooms, subjects, "⚠️ Faça login."
 
     classroom = _get_class_by_id(classrooms, cls_id)
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    normalized = [_normalize_username(t) for t in classroom["members"]["teachers"]]
-    if me not in normalized and not _is_admin(auth):
+    teacher_ids = list((classroom.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teacher_ids and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
-    owner = _normalize_username(classroom.get("owner"))
-    if owner and me != owner and not _is_admin(auth):
+    owner_id = classroom.get("owner_id")
+    if owner_id and me_id != owner_id and not _is_admin(auth):
         return (
             classrooms,
             subjects,
@@ -384,7 +427,7 @@ def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     role_label = None
-    if not owner and me:
+    if not owner_id and me_id:
         role_label = "owner"
 
     try:
@@ -412,13 +455,13 @@ def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
 def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
     name = (name or "").strip()
     theme = (theme or "").strip() or name
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     role = _user_role(auth)
 
     if role not in ("professor", "admin"):
         md, dd = _teacher_classrooms_outputs(auth, classrooms, "⛔ Apenas professores ou admins podem criar salas.")
         return classrooms, subjects, md, dd, dd, "⛔ Apenas professores ou admins podem criar salas."
-    if not me and not _is_admin(auth):
+    if not me_id and not _is_admin(auth):
         md, dd = _teacher_classrooms_outputs(auth, classrooms, "⚠️ Faça login.")
         return classrooms, subjects, md, dd, dd, "⚠️ Faça login."
     if not name:
@@ -460,7 +503,7 @@ def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth)
         return classrooms, subjects, md, dd, dd, f"❌ Erro ao criar sala: {err}"
 
     classroom_id = (created or {}).get("id")
-    if _is_teacher(auth) and me and creator_id and classroom_id:
+    if _is_teacher(auth) and me_id and creator_id and classroom_id:
         try:
             upsert_classroom_teacher(
                 SUPABASE_URL,
@@ -487,7 +530,7 @@ def teacher_refresh(auth, classrooms, subjects):
 
 
 def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     uname_norm = _normalize_username(uname)
     if not cls_id or not uname_norm:
         return classrooms, subjects, "⚠️ Informe sala e username."
@@ -496,8 +539,8 @@ def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    teachers = [t.strip().lower() for t in classroom["members"]["teachers"]]
-    if me not in teachers and not _is_admin(auth):
+    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teachers and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
     try:
@@ -542,7 +585,7 @@ def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
 
 
 def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     uname_norm = _normalize_username(uname)
     if not cls_id or not uname_norm:
         return classrooms, subjects, "⚠️ Informe sala e username."
@@ -551,8 +594,8 @@ def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    teachers = [t.strip().lower() for t in classroom["members"]["teachers"]]
-    if me not in teachers and not _is_admin(auth):
+    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teachers and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
     try:
@@ -600,13 +643,14 @@ def teacher_subjects_refresh(auth, classrooms, selected_id, subjects_by_class):
 
 
 def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     if not selected_id:
         return classrooms, subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala."
     classroom = _get_class_by_id(classrooms, selected_id)
     if not classroom:
         return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Sala não encontrada."
-    if me not in [t.strip().lower() for t in classroom["members"]["teachers"]] and not _is_admin(auth):
+    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teachers and not _is_admin(auth):
         return classrooms, subjects_by_class, gr.update(), gr.update(), "⛔ Você não é professor desta sala."
     subj_name = (subj or "").strip()
     if not subj_name:
@@ -647,8 +691,9 @@ def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classroo
     classroom = _get_class_by_id(classrooms, selected_id)
     if not classroom:
         return classrooms, subjects_by_class, "⚠️ Sala não encontrada."
-    me = _teacher_username(auth)
-    if me not in [t.strip().lower() for t in classroom["members"]["teachers"]] and not _is_admin(auth):
+    me_id = _auth_user_id(auth)
+    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teachers and not _is_admin(auth):
         return classrooms, subjects_by_class, "⛔ Você não é professor desta sala."
 
     current = list(subjects_by_class.get(selected_id, []))
@@ -912,7 +957,7 @@ def build_teacher_view(
 
     tHistoryRefresh.click(
         teacher_history_refresh,
-        inputs=[auth_state, tHistoryClass],
+        inputs=[auth_state, tHistoryClass, classrooms_state],
         outputs=[
             tHistoryTable,
             teacher_history_state,
@@ -944,7 +989,7 @@ def build_teacher_view(
 
     tHistoryClass.change(
         teacher_history_refresh,
-        inputs=[auth_state, tHistoryClass],
+        inputs=[auth_state, tHistoryClass, classrooms_state],
         outputs=[
             tHistoryTable,
             teacher_history_state,
