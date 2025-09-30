@@ -125,7 +125,8 @@ def list_teacher_classroom_chats(
         }
 
     normalized = [
-        _normalize_chat_record(row, classroom_map=classroom_map, user_map=user_map)
+        _normalize_chat_record(
+            row, classroom_map=classroom_map, user_map=user_map)
         for row in chat_rows
     ]
 

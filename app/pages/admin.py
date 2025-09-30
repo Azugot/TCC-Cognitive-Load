@@ -273,49 +273,76 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
 
     normalized_classrooms = []
     for item in raw_classrooms:
-        teacher_map = {}
+        teacher_ids: List[str] = []
+        teacher_labels: Dict[str, str] = {}
+        teacher_usernames: Dict[str, str] = {}
         for entry in item.get("teachers", []) or []:
-            login = _normalize_username(entry.get("login"))
-            if not login:
+            uid = entry.get("user_id")
+            if not uid:
                 continue
+            username = (entry.get("username") or entry.get("login") or "").strip()
             display = (
                 entry.get("full_name")
                 or entry.get("display_name")
                 or entry.get("name")
                 or ""
             ).strip()
-            teacher_map[login] = display or login
+            teacher_ids.append(uid)
+            if display:
+                teacher_labels[uid] = display
+            elif username:
+                teacher_labels[uid] = username
+            teacher_usernames[uid] = username or teacher_usernames.get(uid, "")
 
-        student_map = {}
+        student_ids: List[str] = []
+        student_labels: Dict[str, str] = {}
+        student_usernames: Dict[str, str] = {}
         for entry in item.get("students", []) or []:
-            login = _normalize_username(entry.get("login"))
-            if not login:
+            uid = entry.get("user_id")
+            if not uid:
                 continue
             status = str(entry.get("status", "active")).lower()
             if status != "active":
                 continue
+            username = (entry.get("username") or entry.get("login") or "").strip()
             display = (
                 entry.get("full_name")
                 or entry.get("display_name")
                 or entry.get("name")
                 or ""
             ).strip()
-            student_map[login] = display or login
+            student_ids.append(uid)
+            if display:
+                student_labels[uid] = display
+            elif username:
+                student_labels[uid] = username
+            student_usernames[uid] = username or student_usernames.get(uid, "")
 
-        owner_login = _normalize_username(item.get("owner_login"))
-        if owner_login:
-            if owner_login not in teacher_map:
-                owner_label = None
-                owner_id = item.get("owner_id")
-                if owner_id:
-                    for entry in item.get("teachers", []) or []:
-                        if entry.get("user_id") == owner_id:
-                            owner_label = (entry.get("display_name") or "").strip()
-                            break
-                teacher_map[owner_login] = owner_label or teacher_map.get(owner_login) or owner_login
-
-        teacher_map = {login: label for login, label in teacher_map.items() if login}
-        student_map = {login: label for login, label in student_map.items() if login}
+        owner_id = item.get("owner_id")
+        owner_username = (item.get("owner_username") or "").strip()
+        if owner_id and owner_id not in teacher_ids:
+            teacher_ids.append(owner_id)
+        if owner_id and owner_username:
+            teacher_usernames.setdefault(owner_id, owner_username)
+        owner_label = None
+        if owner_id:
+            owner_label = teacher_labels.get(owner_id)
+            if not owner_label:
+                for entry in item.get("teachers", []) or []:
+                    if entry.get("user_id") == owner_id:
+                        owner_label = (
+                            entry.get("full_name")
+                            or entry.get("display_name")
+                            or entry.get("name")
+                            or ""
+                        ).strip()
+                        username = (entry.get("username") or entry.get("login") or "").strip()
+                        if username:
+                            teacher_usernames.setdefault(owner_id, username)
+                        break
+            if not owner_label:
+                owner_label = owner_username or owner_id
+            teacher_labels.setdefault(owner_id, owner_label)
 
         normalized_classrooms.append(
             {
@@ -327,13 +354,15 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                 "theme_locked": bool(item.get("theme_locked")),
                 "is_archived": bool(item.get("is_archived")),
                 "members": {
-                    "teachers": sorted(teacher_map),
-                    "students": sorted(student_map),
-                    "teacher_labels": teacher_map,
-                    "student_labels": student_map,
+                    "teachers": sorted({uid for uid in teacher_ids if uid}),
+                    "students": sorted({uid for uid in student_ids if uid}),
+                    "teacher_labels": {uid: label for uid, label in teacher_labels.items() if uid},
+                    "student_labels": {uid: label for uid, label in student_labels.items() if uid},
+                    "teacher_usernames": {uid: username for uid, username in teacher_usernames.items() if uid},
+                    "student_usernames": {uid: username for uid, username in student_usernames.items() if uid},
                 },
-                "owner": owner_login,
-                "owner_id": item.get("owner_id"),
+                "owner_id": owner_id,
+                "owner_username": owner_username or teacher_usernames.get(owner_id or "") or None,
             }
         )
 
@@ -557,17 +586,17 @@ def add_teacher(cls_id, uname, classrooms, subjects, auth):
     if not cls_id or not uname:
         return classrooms, subjects, "⚠️ Informe sala e username."
     uname_norm = _normalize_username(uname)
-    me = _teacher_username(auth)
+    me_id = _auth_user_id(auth)
     classroom = _get_class_by_id(classrooms, cls_id)
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    normalized = [_normalize_username(t) for t in classroom["members"]["teachers"]]
-    if me not in normalized and not _is_admin(auth):
+    teacher_ids = list((classroom.get("members", {}) or {}).get("teachers", []))
+    if me_id not in teacher_ids and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
-    owner = _normalize_username(classroom.get("owner"))
-    if owner and me != owner and not _is_admin(auth):
+    owner_id = classroom.get("owner_id")
+    if owner_id and me_id != owner_id and not _is_admin(auth):
         return classrooms, subjects, "⛔ Apenas o professor responsável por esta sala pode adicionar outros professores."
 
     try:
@@ -588,7 +617,7 @@ def add_teacher(cls_id, uname, classrooms, subjects, auth):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     role_label = None
-    if not owner and me:
+    if not owner_id and me_id:
         role_label = "owner"
 
     try:
