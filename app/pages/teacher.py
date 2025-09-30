@@ -54,9 +54,56 @@ class TeacherView:
     notice: gr.Markdown
     select_dropdown: gr.Dropdown
     back_button: gr.Button
+    history_class_dropdown: gr.Dropdown
 
 
-def teacher_history_refresh(auth, classroom_filter):
+def _resolve_classroom_filter(
+    raw_filter: Optional[str],
+    auth: Optional[Dict[str, Any]],
+    classrooms: Optional[Iterable[Dict[str, Any]]],
+    chats: Optional[Iterable[Dict[str, Any]]],
+) -> str:
+    """Return the classroom ID associated with the raw dropdown value."""
+
+    value = str(raw_filter or "").strip()
+    if not value:
+        return ""
+
+    def _match_entries(
+        entries: Iterable[Dict[str, Any]],
+        *,
+        id_key: str = "id",
+        name_key: str = "name",
+    ) -> str:
+        # First try to match by the raw identifier returned by the dropdown.
+        for entry in entries:
+            cid = str((entry or {}).get(id_key) or "").strip()
+            if cid and value == cid:
+                return cid
+
+        lowered = value.lower()
+        for entry in entries:
+            data = entry or {}
+            cid = str(data.get(id_key) or "").strip()
+            name = str(data.get(name_key) or "").strip()
+            if cid and name and name.lower() == lowered:
+                return cid
+
+        return ""
+
+    teacher_classes = _teacher_classes(auth, classrooms or [])
+    resolved = _match_entries(teacher_classes)
+    if resolved:
+        return resolved
+
+    resolved = _match_entries(chats or [], id_key="classroom_id", name_key="classroom_name")
+    if resolved:
+        return resolved
+
+    return ""
+
+
+def teacher_history_refresh(auth, classroom_filter, classrooms=None):
     teacher_id = _auth_user_id(auth)
     if not teacher_id:
         return (
@@ -91,7 +138,12 @@ def teacher_history_refresh(auth, classroom_filter):
             None,
         )
 
-    classroom_filter = (classroom_filter or "").strip()
+    classroom_filter = _resolve_classroom_filter(
+        classroom_filter,
+        auth,
+        classrooms,
+        chats,
+    )
 
     def _filter_chat(chat: Dict[str, Any]) -> bool:
         return str(chat.get("classroom_id")) == classroom_filter
@@ -211,6 +263,12 @@ def _teacher_history_dropdown(auth, classrooms, current_value=None):
     valid_ids = [value for _, value in choices]
     value = current_value if current_value in valid_ids else None
     return gr.update(choices=choices, value=value)
+
+
+def teacher_history_dropdown(auth, classrooms, current_value=None):
+    """Public helper to refresh the teacher history classroom filter."""
+
+    return _teacher_history_dropdown(auth, classrooms, current_value)
 
 
 def _render_teacher_members_md(cls_id, classrooms):
@@ -928,7 +986,7 @@ def build_teacher_view(
 
     tHistoryRefresh.click(
         teacher_history_refresh,
-        inputs=[auth_state, tHistoryClass],
+        inputs=[auth_state, tHistoryClass, classrooms_state],
         outputs=[
             tHistoryTable,
             teacher_history_state,
@@ -960,7 +1018,7 @@ def build_teacher_view(
 
     tHistoryClass.change(
         teacher_history_refresh,
-        inputs=[auth_state, tHistoryClass],
+        inputs=[auth_state, tHistoryClass, classrooms_state],
         outputs=[
             tHistoryTable,
             teacher_history_state,
@@ -1060,12 +1118,14 @@ def build_teacher_view(
         notice=teacherNotice,
         select_dropdown=tSelectClass,
         back_button=btnTeacherBack,
+        history_class_dropdown=tHistoryClass,
     )
 
 
 __all__ = [
     "TeacherView",
     "build_teacher_view",
+    "teacher_history_dropdown",
     "teacher_add_classroom",
     "teacher_refresh",
     "teacher_add_teacher",

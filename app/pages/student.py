@@ -214,7 +214,7 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
     ) or "—"
 
     students = ", ".join(
-        _class_member_labels(c, "students", username_only=True)
+        _class_member_labels(c, "students")
     ) or "—"
 
     theme = c.get("theme_name") or c["name"]
