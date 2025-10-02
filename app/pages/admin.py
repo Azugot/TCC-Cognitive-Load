@@ -30,10 +30,13 @@ from app.config import (
     SUPABASE_USERS_TABLE,
 )
 from app.utils import (
+    _auth_matches_classroom_owner,
+    _auth_matches_classroom_teacher,
     _auth_user_id,
     _class_member_labels,
     _get_class_by_id,
     _is_admin,
+    _legacy_owner_sentinel,
     _merge_notice,
     _normalize_username,
     _teacher_username,
@@ -319,10 +322,13 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
             student_usernames[uid] = username or student_usernames.get(uid, "")
 
         owner_id = item.get("owner_id")
+        owner_login = (item.get("owner_login") or "").strip()
         owner_username = (item.get("owner_username") or "").strip()
         if owner_id and owner_id not in teacher_ids:
             teacher_ids.append(owner_id)
-        if owner_id and owner_username:
+        if owner_id and owner_login:
+            teacher_usernames.setdefault(owner_id, owner_login)
+        if owner_id and owner_username and owner_id not in teacher_usernames:
             teacher_usernames.setdefault(owner_id, owner_username)
         owner_label = None
         if owner_id:
@@ -341,8 +347,20 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                             teacher_usernames.setdefault(owner_id, username)
                         break
             if not owner_label:
-                owner_label = owner_username or owner_id
+                owner_label = owner_username or owner_login or owner_id
             teacher_labels.setdefault(owner_id, owner_label)
+
+        legacy_owner_id = None
+        if not owner_id and owner_login:
+            legacy_owner_id = _legacy_owner_sentinel(owner_login)
+            if legacy_owner_id:
+                if legacy_owner_id not in teacher_ids:
+                    teacher_ids.append(legacy_owner_id)
+                teacher_usernames.setdefault(legacy_owner_id, owner_login)
+                if owner_username:
+                    teacher_labels.setdefault(legacy_owner_id, owner_username)
+                else:
+                    teacher_labels.setdefault(legacy_owner_id, owner_login)
 
         normalized_classrooms.append(
             {
@@ -362,7 +380,8 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                     "student_usernames": {uid: username for uid, username in student_usernames.items() if uid},
                 },
                 "owner_id": owner_id,
-                "owner_username": owner_username or teacher_usernames.get(owner_id or "") or None,
+                "owner_username": owner_username or teacher_labels.get(owner_id or "") or None,
+                "owner_login": owner_login or teacher_usernames.get(owner_id or "") or None,
             }
         )
 
@@ -586,17 +605,17 @@ def add_teacher(cls_id, uname, classrooms, subjects, auth):
     if not cls_id or not uname:
         return classrooms, subjects, "⚠️ Informe sala e username."
     uname_norm = _normalize_username(uname)
-    me_id = _auth_user_id(auth)
+    if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):
+        return classrooms, subjects, "⚠️ Faça login."
     classroom = _get_class_by_id(classrooms, cls_id)
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    teacher_ids = list((classroom.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teacher_ids and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
-    owner_id = classroom.get("owner_id")
-    if owner_id and me_id != owner_id and not _is_admin(auth):
+    owner_known = classroom.get("owner_id") or classroom.get("owner_login")
+    if owner_known and not _auth_matches_classroom_owner(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects, "⛔ Apenas o professor responsável por esta sala pode adicionar outros professores."
 
     try:
@@ -617,7 +636,7 @@ def add_teacher(cls_id, uname, classrooms, subjects, auth):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     role_label = None
-    if not owner_id and me_id:
+    if not classroom.get("owner_id") and _auth_matches_classroom_owner(auth, classroom):
         role_label = "owner"
 
     try:

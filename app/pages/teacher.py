@@ -36,6 +36,8 @@ from app.pages.history_shared import (
     prepare_history_listing,
 )
 from app.utils import (
+    _auth_matches_classroom_owner,
+    _auth_matches_classroom_teacher,
     _auth_user_id,
     _class_member_labels,
     _get_class_by_id,
@@ -244,11 +246,9 @@ def teacher_history_prepare_download(download_path):
 def _teacher_classes(auth, classrooms: Iterable[Dict[str, Any]]):
     if _is_admin(auth):
         return list(classrooms or [])
-    me_id = _auth_user_id(auth)
     out = []
     for c in classrooms or []:
-        teachers = (c.get("members", {}) or {}).get("teachers", []) or []
-        if me_id and me_id in teachers:
+        if _auth_matches_classroom_teacher(auth, c):
             out.append(c)
     return out
 
@@ -276,30 +276,14 @@ def _render_teacher_members_md(cls_id, classrooms):
     if not c:
         return "⚠️ Selecione uma de suas salas."
     members = c.get("members", {}) or {}
-    teacher_ids = members.get("teachers", [])
-    student_ids = members.get("students", [])
-
-    teacher_labels = members.get("teacher_labels", {})
-    student_labels = members.get("student_labels", {})
-    teacher_usernames = members.get("teacher_usernames", {})
-    student_usernames = members.get("student_usernames", {})
+    teacher_ids = list(members.get("teachers", []) or [])
+    student_ids = list(members.get("students", []) or [])
 
     teachers = ", ".join(
-        (
-            f"{teacher_labels.get(uid, uid)} (u:{teacher_usernames.get(uid, uid)})"
-            if teacher_usernames.get(uid)
-            else teacher_labels.get(uid, uid)
-        )
-        for uid in teacher_ids
+        _class_member_labels(c, "teachers", include_usernames=True)
     ) or "—"
-
     students = ", ".join(
-        (
-            f"{student_labels.get(uid, uid)} (u:{student_usernames.get(uid, uid)})"
-            if student_usernames.get(uid)
-            else student_labels.get(uid, uid)
-        )
-        for uid in student_ids
+        _class_member_labels(c, "students", include_usernames=True)
     ) or "—"
 
     return (
@@ -361,12 +345,10 @@ def teacher_save_params(
     subjects,
     auth,
 ):
-    me_id = _auth_user_id(auth)
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
         return classrooms, subjects, "⚠️ Sala não encontrada."
-    teachers = list((c.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teachers and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, c) and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
     cfg = {
@@ -413,23 +395,21 @@ def _teacher_classrooms_outputs(auth, classrooms, notice=""):
 
 
 def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
-    me_id = _auth_user_id(auth)
     uname_norm = _normalize_username(uname)
     if not cls_id or not uname_norm:
         return classrooms, subjects, "⚠️ Informe sala e username."
-    if not me_id and not _is_admin(auth):
+    if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):
         return classrooms, subjects, "⚠️ Faça login."
 
     classroom = _get_class_by_id(classrooms, cls_id)
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    teacher_ids = list((classroom.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teacher_ids and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
-    owner_id = classroom.get("owner_id")
-    if owner_id and me_id != owner_id and not _is_admin(auth):
+    owner_known = classroom.get("owner_id") or classroom.get("owner_login")
+    if owner_known and not _auth_matches_classroom_owner(auth, classroom) and not _is_admin(auth):
         return (
             classrooms,
             subjects,
@@ -456,7 +436,7 @@ def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
         return classrooms, subjects, "⚠️ Usuário não encontrado."
 
     role_label = None
-    if not owner_id and me_id:
+    if not classroom.get("owner_id") and _auth_matches_classroom_owner(auth, classroom):
         role_label = "owner"
 
     try:
@@ -559,17 +539,17 @@ def teacher_refresh(auth, classrooms, subjects):
 
 
 def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
-    me_id = _auth_user_id(auth)
     uname_norm = _normalize_username(uname)
     if not cls_id or not uname_norm:
         return classrooms, subjects, "⚠️ Informe sala e username."
+    if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):
+        return classrooms, subjects, "⚠️ Faça login."
 
     classroom = _get_class_by_id(classrooms, cls_id)
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teachers and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
     try:
@@ -614,17 +594,17 @@ def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
 
 
 def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
-    me_id = _auth_user_id(auth)
     uname_norm = _normalize_username(uname)
     if not cls_id or not uname_norm:
         return classrooms, subjects, "⚠️ Informe sala e username."
+    if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):
+        return classrooms, subjects, "⚠️ Faça login."
 
     classroom = _get_class_by_id(classrooms, cls_id)
     if not classroom:
         return classrooms, subjects, "⚠️ Sala não encontrada."
 
-    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teachers and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects, "⛔ Você não é professor desta sala."
 
     try:
@@ -645,6 +625,35 @@ def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
 
     if not record or not record.id:
         return classrooms, subjects, "⚠️ Usuário não encontrado."
+
+    members = classroom.get("members") or {}
+    student_ids = {str(uid) for uid in (members.get("students") or []) if uid}
+    student_usernames = members.get("student_usernames") or {}
+
+    is_member = False
+    if record.id and str(record.id) in student_ids:
+        is_member = True
+    else:
+        normalized_values = {
+            _normalize_username(value): str(uid)
+            for uid, value in student_usernames.items()
+            if uid and value
+        }
+        candidate_usernames = {
+            uname_norm,
+            _normalize_username(getattr(record, "username", None)),
+            _normalize_username(getattr(record, "email", None)),
+        }
+        is_member = any(
+            candidate and candidate in normalized_values for candidate in candidate_usernames
+        )
+
+    if not is_member:
+        md = _merge_notice(
+            _render_teacher_members_md(cls_id, classrooms),
+            "⚠️ Usuário não é aluno desta sala.",
+        )
+        return classrooms, subjects, md
 
     try:
         remove_classroom_student(
@@ -672,14 +681,12 @@ def teacher_subjects_refresh(auth, classrooms, selected_id, subjects_by_class):
 
 
 def teacher_add_subject(auth, selected_id, subj, subjects_by_class, classrooms):
-    me_id = _auth_user_id(auth)
     if not selected_id:
         return classrooms, subjects_by_class, gr.update(), gr.update(), "ℹ️ Selecione uma sala."
     classroom = _get_class_by_id(classrooms, selected_id)
     if not classroom:
         return classrooms, subjects_by_class, gr.update(), gr.update(), "⚠️ Sala não encontrada."
-    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teachers and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects_by_class, gr.update(), gr.update(), "⛔ Você não é professor desta sala."
     subj_name = (subj or "").strip()
     if not subj_name:
@@ -720,9 +727,7 @@ def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classroo
     classroom = _get_class_by_id(classrooms, selected_id)
     if not classroom:
         return classrooms, subjects_by_class, "⚠️ Sala não encontrada."
-    me_id = _auth_user_id(auth)
-    teachers = list((classroom.get("members", {}) or {}).get("teachers", []))
-    if me_id not in teachers and not _is_admin(auth):
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
         return classrooms, subjects_by_class, "⛔ Você não é professor desta sala."
 
     current = list(subjects_by_class.get(selected_id, []))
