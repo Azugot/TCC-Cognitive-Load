@@ -382,6 +382,7 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                 "owner_id": owner_id,
                 "owner_username": owner_username or teacher_labels.get(owner_id or "") or None,
                 "owner_login": owner_login or teacher_usernames.get(owner_id or "") or None,
+                "documents": list(item.get("documents") or []),
             }
         )
 

@@ -2,26 +2,40 @@
 
 from __future__ import annotations
 
+import mimetypes
+import os
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
+from uuid import uuid4
 
 import gradio as gr
 
 from services.supabase_client import (
     SupabaseConfigurationError,
     SupabaseOperationError,
+    create_classroom_document_record,
     create_classroom_record,
     create_subject_record,
+    delete_classroom_document_record,
+    delete_file_from_bucket,
     fetch_user_record,
     list_teacher_classroom_chats,
     remove_classroom_student,
     set_classroom_theme_config,
+    update_classroom_document_record,
     update_subject_active,
+    upload_file_to_bucket,
     upsert_classroom_student,
     upsert_classroom_teacher,
 )
 
-from app.config import SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_USERS_TABLE
+from app.config import (
+    SUPABASE_CLASS_DOCS_BUCKET,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_URL,
+    SUPABASE_USERS_TABLE,
+)
 from app.pages.admin import _render_classrooms_md, _render_subjects_md, _refresh_states
 from app.pages.history_shared import (
     HISTORY_TABLE_HEADERS,
@@ -291,6 +305,96 @@ def _render_teacher_members_md(cls_id, classrooms):
         f"- 👩‍🏫 Professores ({len(teacher_ids)}): {teachers}\n"
         f"- 🎓 Alunos ({len(student_ids)}): {students}"
     )
+
+
+
+def _class_documents(classrooms, cls_id):
+    classroom = _get_class_by_id(classrooms, cls_id)
+    if not classroom:
+        return []
+    docs = classroom.get("documents") or []
+    return list(docs)
+
+
+def _safe_document_filename(name: str) -> str:
+    base = os.path.basename(name or "")
+    base = base.replace("\\", "/").split("/")[-1]
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    sanitized = sanitized.strip("._") or "documento"
+    return sanitized
+
+
+def _format_filesize(value: Any) -> str:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if size < 1024:
+        return f"{size} B"
+    units = ["KB", "MB", "GB", "TB"]
+    scaled = float(size)
+    for unit in units:
+        scaled /= 1024.0
+        if scaled < 1024.0:
+            return f"{scaled:.1f} {unit}"
+    return f"{scaled:.1f} PB"
+
+
+def _render_documents_md(cls_id, classrooms):
+    if not cls_id:
+        return "ℹ️ Selecione uma sala para visualizar os materiais."
+    docs = _class_documents(classrooms, cls_id)
+    if not docs:
+        return "ℹ️ Nenhum material enviado para esta sala ainda."
+
+    lines = [f"### Materiais cadastrados ({len(docs)})"]
+    for doc in docs:
+        name = (doc.get("name") or "Documento").strip() or "Documento"
+        size = _format_filesize(doc.get("file_size"))
+        author = (
+            doc.get("uploaded_by_name")
+            or doc.get("uploaded_by_username")
+            or doc.get("uploaded_by_login")
+            or doc.get("uploaded_by")
+        )
+        updated_at = doc.get("updated_at") or doc.get("created_at")
+        timestamp = _format_timestamp(updated_at) if updated_at else None
+        details = [part for part in (size, author, timestamp) if part]
+        detail_text = f" — {', '.join(details)}" if details else ""
+        lines.append(f"- 📄 **{name}**{detail_text}")
+        storage_bucket = doc.get("storage_bucket")
+        storage_path = doc.get("storage_path")
+        if storage_bucket and storage_path:
+            lines.append(f"  - Storage: `{storage_bucket}/{storage_path}`")
+        content_type = doc.get("content_type")
+        if content_type:
+            lines.append(f"  - Tipo: `{content_type}`")
+    return "\n".join(lines)
+
+
+def _documents_dropdown(classrooms, cls_id, current_value=None):
+    docs = _class_documents(classrooms, cls_id)
+    choices = []
+    for doc in docs:
+        doc_id = doc.get("id")
+        if not doc_id:
+            continue
+        name = (doc.get("name") or str(doc_id)).strip() or str(doc_id)
+        size = _format_filesize(doc.get("file_size"))
+        label = f"{name} ({size})" if size else name
+        choices.append((label, doc_id))
+    valid_ids = [value for _, value in choices]
+    value = current_value if current_value in valid_ids else None
+    return gr.update(choices=choices, value=value)
+
+
+def _get_document_by_id(classrooms, cls_id, doc_id):
+    if not doc_id:
+        return None
+    for doc in _class_documents(classrooms, cls_id):
+        if str(doc.get("id")) == str(doc_id):
+            return doc
+    return None
 
 
 
@@ -762,10 +866,396 @@ def teacher_apply_active(auth, selected_id, actives, subjects_by_class, classroo
     return classes, subjects_map, md
 
 
+def teacher_upload_document(
+    files,
+    selected_id,
+    classrooms,
+    subjects_by_class,
+    auth,
+):
+    classroom = _get_class_by_id(classrooms, selected_id)
+    if not classroom:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Sala não encontrada."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⛔ Você não é professor desta sala."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+
+    file_obj = None
+    if isinstance(files, list):
+        file_obj = files[0] if files else None
+    else:
+        file_obj = files
+
+    if file_obj is None:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Selecione um arquivo para enviar."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+
+    file_path = getattr(file_obj, "name", None)
+    orig_name = getattr(file_obj, "orig_name", None) or os.path.basename(file_path or "")
+    display_name = orig_name or "Documento"
+    safe_name = _safe_document_filename(display_name)
+    storage_name = f"{uuid4().hex}_{safe_name}"
+    storage_path = f"{selected_id}/{storage_name}"
+    content_type = getattr(file_obj, "mime_type", None)
+    if not content_type and file_path:
+        guessed, _ = mimetypes.guess_type(file_path)
+        content_type = guessed or None
+    file_size = None
+    if file_path and os.path.isfile(file_path):
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError:
+            file_size = None
+
+    try:
+        stored_path = upload_file_to_bucket(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            bucket=SUPABASE_CLASS_DOCS_BUCKET,
+            file_path=file_path,
+            storage_path=storage_path,
+            content_type=content_type,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(
+                value="⚠️ Configure SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e SUPABASE_CLASS_DOCS_BUCKET para enviar materiais."
+            ),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+    except SupabaseOperationError as err:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value=f"❌ Erro ao enviar arquivo: {err}"),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+
+    uploader_id = _auth_user_id(auth)
+
+    try:
+        created = create_classroom_document_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            classroom_id=selected_id,
+            name=display_name,
+            storage_bucket=SUPABASE_CLASS_DOCS_BUCKET,
+            storage_path=stored_path or storage_path,
+            uploaded_by=uploader_id,
+            file_size=file_size,
+            content_type=content_type,
+        )
+    except SupabaseConfigurationError:
+        try:
+            delete_file_from_bucket(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                bucket=SUPABASE_CLASS_DOCS_BUCKET,
+                storage_path=stored_path or storage_path,
+            )
+        except (SupabaseOperationError, SupabaseConfigurationError):
+            pass
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(
+                value="⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para registrar o material."
+            ),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+    except SupabaseOperationError as err:
+        try:
+            delete_file_from_bucket(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                bucket=SUPABASE_CLASS_DOCS_BUCKET,
+                storage_path=stored_path or storage_path,
+            )
+        except (SupabaseOperationError, SupabaseConfigurationError):
+            pass
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value=f"❌ Erro ao registrar material: {err}"),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    doc_id = created.get("id") if isinstance(created, dict) else None
+    dropdown_update = _documents_dropdown(classes, selected_id, current_value=doc_id)
+    message = notice or "✅ Material enviado com sucesso."
+    last_upload_value = (
+        file_path if file_path and os.path.isfile(file_path) else None
+    )
+    return (
+        classes,
+        subjects_map,
+        gr.update(value=message),
+        gr.update(value=_render_documents_md(selected_id, classes)),
+        dropdown_update,
+        gr.update(value=""),
+        gr.update(value=last_upload_value),
+    )
+
+
+def teacher_rename_document(
+    document_id,
+    new_name,
+    selected_id,
+    classrooms,
+    subjects_by_class,
+    auth,
+):
+    classroom = _get_class_by_id(classrooms, selected_id)
+    if not classroom:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Sala não encontrada."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=new_name or ""),
+        )
+
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⛔ Você não é professor desta sala."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=new_name or ""),
+        )
+
+    doc = _get_document_by_id(classrooms, selected_id, document_id)
+    if not doc:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Material não encontrado."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=new_name or ""),
+        )
+
+    normalized_name = (new_name or "").strip()
+    if not normalized_name:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Informe um novo nome para o material."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=new_name or ""),
+        )
+
+    try:
+        update_classroom_document_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            document_id=document_id,
+            name=normalized_name,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(
+                value="⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para atualizar materiais."
+            ),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=new_name or ""),
+        )
+    except SupabaseOperationError as err:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value=f"❌ Erro ao renomear material: {err}"),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=new_name or ""),
+        )
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    dropdown_update = _documents_dropdown(classes, selected_id, current_value=document_id)
+    message = notice or "✅ Material renomeado."
+    return (
+        classes,
+        subjects_map,
+        gr.update(value=message),
+        gr.update(value=_render_documents_md(selected_id, classes)),
+        dropdown_update,
+        gr.update(value=""),
+    )
+
+
+def teacher_delete_document(
+    document_id,
+    selected_id,
+    classrooms,
+    subjects_by_class,
+    auth,
+):
+    classroom = _get_class_by_id(classrooms, selected_id)
+    if not classroom:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Sala não encontrada."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+        )
+
+    if not _auth_matches_classroom_teacher(auth, classroom) and not _is_admin(auth):
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⛔ Você não é professor desta sala."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=""),
+        )
+
+    doc = _get_document_by_id(classrooms, selected_id, document_id)
+    if not doc:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Material não encontrado."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+        )
+
+    bucket = doc.get("storage_bucket") or SUPABASE_CLASS_DOCS_BUCKET
+    storage_path = doc.get("storage_path")
+
+    if bucket and storage_path:
+        try:
+            delete_file_from_bucket(
+                SUPABASE_URL,
+                SUPABASE_SERVICE_ROLE_KEY,
+                bucket=bucket,
+                storage_path=storage_path,
+            )
+        except SupabaseConfigurationError:
+            return (
+                classrooms,
+                subjects_by_class,
+                gr.update(
+                    value="⚠️ Configure SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e SUPABASE_CLASS_DOCS_BUCKET para remover materiais."
+                ),
+                gr.update(value=_render_documents_md(selected_id, classrooms)),
+                _documents_dropdown(classrooms, selected_id, current_value=document_id),
+                gr.update(value=""),
+            )
+        except SupabaseOperationError as err:
+            return (
+                classrooms,
+                subjects_by_class,
+                gr.update(value=f"❌ Erro ao remover arquivo do Storage: {err}"),
+                gr.update(value=_render_documents_md(selected_id, classrooms)),
+                _documents_dropdown(classrooms, selected_id, current_value=document_id),
+                gr.update(value=""),
+            )
+
+    try:
+        delete_classroom_document_record(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            document_id=document_id,
+        )
+    except SupabaseConfigurationError:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(
+                value="⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para remover materiais."
+            ),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=""),
+        )
+    except SupabaseOperationError as err:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value=f"❌ Erro ao remover material: {err}"),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id, current_value=document_id),
+            gr.update(value=""),
+        )
+
+    classes, subjects_map, notice = _refresh_states(classrooms, subjects_by_class)
+    dropdown_update = _documents_dropdown(classes, selected_id)
+    message = notice or "✅ Material removido."
+    return (
+        classes,
+        subjects_map,
+        gr.update(value=message),
+        gr.update(value=_render_documents_md(selected_id, classes)),
+        dropdown_update,
+        gr.update(value=""),
+    )
+
+
 def _teacher_on_select(auth, classrooms, selected_id, subjects_by_class):
     md_members = _render_teacher_members_md(selected_id, classrooms)
-    dd, chk, md_subjects = _subjects_choices_teacher(auth, classrooms, selected_id, subjects_by_class)
-    return md_members, dd, chk, md_subjects
+    dd, chk, md_subjects = _subjects_choices_teacher(
+        auth, classrooms, selected_id, subjects_by_class
+    )
+    docs_md = _render_documents_md(selected_id, classrooms)
+    docs_dd = _documents_dropdown(classrooms, selected_id)
+    return (
+        md_members,
+        dd,
+        chk,
+        md_subjects,
+        docs_md,
+        docs_dd,
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=None),
+    )
 
 
 def build_teacher_view(
@@ -816,6 +1306,26 @@ def build_teacher_view(
                 tActiveList = gr.CheckboxGroup(choices=[], label="Ativar/desativar subtemas", value=[])
                 btnTeacherApplyActive = gr.Button("✅ Aplicar ativações")
             tSubjectsMd = gr.Markdown("")
+        with gr.Accordion("Materiais da sala", open=False):
+            tDocsMd = gr.Markdown("ℹ️ Selecione uma sala para visualizar os materiais.")
+            with gr.Row():
+                tDocsUpload = gr.UploadButton(
+                    "⬆️ Enviar material",
+                    file_types=["file"],
+                    file_count="single",
+                )
+                tDocsLastUpload = gr.File(label="Último upload", interactive=False)
+            tDocsSelect = gr.Dropdown(
+                choices=[], label="Materiais cadastrados", value=None
+            )
+            with gr.Row():
+                tDocsRename = gr.Textbox(
+                    label="Renomear material",
+                    placeholder="Novo nome para o material selecionado",
+                )
+                btnDocsRename = gr.Button("✏️ Renomear")
+                btnDocsDelete = gr.Button("🗑️ Excluir", variant="stop")
+            tDocsNotice = gr.Markdown("")
         with gr.Accordion("Parâmetros do Chat da Sala", open=False):
             with gr.Row():
                 tTemp = gr.Slider(0.0, 1.5, value=0.7, step=0.05, label="temperature")
@@ -944,6 +1454,20 @@ def build_teacher_view(
         ],
         outputs=[classrooms_state, subjects_state, tClassroomsMd, tSelectClass, tSelectClass, teacherNotice],
     ).then(
+        _teacher_on_select,
+        inputs=[auth_state, classrooms_state, tSelectClass, subjects_state],
+        outputs=[
+            tMembersMd,
+            tSelectClass,
+            tActiveList,
+            tSubjectsMd,
+            tDocsMd,
+            tDocsSelect,
+            tDocsRename,
+            tDocsNotice,
+            tDocsLastUpload,
+        ],
+    ).then(
         lambda auth, classrooms, current: _teacher_history_dropdown(auth, classrooms, current),
         inputs=[auth_state, classrooms_state, tHistoryClass],
         outputs=tHistoryClass,
@@ -954,6 +1478,20 @@ def build_teacher_view(
         inputs=[auth_state, classrooms_state, subjects_state],
         outputs=[classrooms_state, subjects_state, tClassroomsMd, tSelectClass],
     ).then(
+        _teacher_on_select,
+        inputs=[auth_state, classrooms_state, tSelectClass, subjects_state],
+        outputs=[
+            tMembersMd,
+            tSelectClass,
+            tActiveList,
+            tSubjectsMd,
+            tDocsMd,
+            tDocsSelect,
+            tDocsRename,
+            tDocsNotice,
+            tDocsLastUpload,
+        ],
+    ).then(
         lambda auth, classrooms, current: _teacher_history_dropdown(auth, classrooms, current),
         inputs=[auth_state, classrooms_state, tHistoryClass],
         outputs=tHistoryClass,
@@ -962,7 +1500,17 @@ def build_teacher_view(
     tSelectClass.change(
         _teacher_on_select,
         inputs=[auth_state, classrooms_state, tSelectClass, subjects_state],
-        outputs=[tMembersMd, tSelectClass, tActiveList, tSubjectsMd],
+        outputs=[
+            tMembersMd,
+            tSelectClass,
+            tActiveList,
+            tSubjectsMd,
+            tDocsMd,
+            tDocsSelect,
+            tDocsRename,
+            tDocsNotice,
+            tDocsLastUpload,
+        ],
     )
 
     btnTeacherAddStudent.click(
@@ -987,6 +1535,53 @@ def build_teacher_view(
         teacher_apply_active,
         inputs=[auth_state, tSelectClass, tActiveList, subjects_state, classrooms_state],
         outputs=[classrooms_state, subjects_state, tSubjectsMd],
+    )
+
+    tDocsUpload.upload(
+        teacher_upload_document,
+        inputs=[tSelectClass, classrooms_state, subjects_state, auth_state],
+        outputs=[
+            classrooms_state,
+            subjects_state,
+            tDocsNotice,
+            tDocsMd,
+            tDocsSelect,
+            tDocsRename,
+            tDocsLastUpload,
+        ],
+    )
+
+    btnDocsRename.click(
+        teacher_rename_document,
+        inputs=[
+            tDocsSelect,
+            tDocsRename,
+            tSelectClass,
+            classrooms_state,
+            subjects_state,
+            auth_state,
+        ],
+        outputs=[
+            classrooms_state,
+            subjects_state,
+            tDocsNotice,
+            tDocsMd,
+            tDocsSelect,
+            tDocsRename,
+        ],
+    )
+
+    btnDocsDelete.click(
+        teacher_delete_document,
+        inputs=[tDocsSelect, tSelectClass, classrooms_state, subjects_state, auth_state],
+        outputs=[
+            classrooms_state,
+            subjects_state,
+            tDocsNotice,
+            tDocsMd,
+            tDocsSelect,
+            tDocsRename,
+        ],
     )
 
     tHistoryRefresh.click(
@@ -1139,6 +1734,9 @@ __all__ = [
     "teacher_subjects_refresh",
     "teacher_add_subject",
     "teacher_apply_active",
+    "teacher_upload_document",
+    "teacher_rename_document",
+    "teacher_delete_document",
     "teacher_load_params",
     "teacher_save_params",
 ]

@@ -116,3 +116,34 @@ def download_file_from_bucket(
 
 
 __all__.append("download_file_from_bucket")
+
+
+def delete_file_from_bucket(
+    url: str,
+    key: str,
+    *,
+    bucket: str,
+    storage_path: str,
+) -> None:
+    """Remove a file from a Supabase Storage bucket."""
+
+    if not bucket or not bucket.strip():
+        raise SupabaseOperationError("Bucket do Storage não informado para exclusão.")
+
+    normalized_path = (storage_path or "").strip().lstrip("/")
+    if not normalized_path:
+        raise SupabaseOperationError("Caminho do arquivo no Storage não informado.")
+
+    client = _get_client(url, key)
+
+    try:
+        client.storage.from_(bucket).remove([normalized_path])
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(
+            f"Falha ao remover arquivo do bucket '{bucket}': {exc}"
+        ) from exc
+
+
+__all__.append("delete_file_from_bucket")

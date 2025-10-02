@@ -89,6 +89,21 @@ def fetch_classroom_domain(
         raise SupabaseOperationError(str(exc)) from exc
     subject_rows = subjects_resp.data or []
 
+    try:
+        documents_resp = (
+            client.table("classroom_documents")
+            .select(
+                "id,classroom_id,name,storage_bucket,storage_path,content_type,file_size,uploaded_by,created_at,updated_at"
+            )
+            .in_("classroom_id", classroom_ids)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+    document_rows = documents_resp.data or []
+
     user_ids: Set[Optional[str]] = set()
     for row in teacher_rows:
         user_ids.add(row.get("teacher_id"))
@@ -96,6 +111,8 @@ def fetch_classroom_domain(
         user_ids.add(row.get("student_id"))
     for row in classrooms_raw:
         user_ids.add(row.get("created_by"))
+    for row in document_rows:
+        user_ids.add(row.get("uploaded_by"))
 
     user_map = _fetch_users_map(client, user_ids, users_table=users_table)
 
@@ -153,6 +170,33 @@ def fetch_classroom_domain(
     for entries in subjects_by_class.values():
         entries.sort(key=lambda item: (item.get("name") or "").lower())
 
+    documents_by_class: Dict[str, List[Dict[str, Any]]] = {}
+    for row in document_rows:
+        cid = row.get("classroom_id")
+        did = row.get("id")
+        if not cid or not did:
+            continue
+        uploader = user_map.get(row.get("uploaded_by"), {})
+        entry = {
+            "id": did,
+            "classroom_id": cid,
+            "name": row.get("name"),
+            "storage_bucket": row.get("storage_bucket"),
+            "storage_path": row.get("storage_path"),
+            "content_type": row.get("content_type"),
+            "file_size": row.get("file_size"),
+            "uploaded_by": row.get("uploaded_by"),
+            "uploaded_by_login": uploader.get("login"),
+            "uploaded_by_username": uploader.get("username"),
+            "uploaded_by_name": uploader.get("display_name") or uploader.get("username") or uploader.get("login"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+        documents_by_class.setdefault(cid, []).append(entry)
+
+    for entries in documents_by_class.values():
+        entries.sort(key=lambda item: (item.get("name") or "").lower())
+
     classrooms: List[Dict[str, Any]] = []
     for raw in classrooms_raw:
         cid = raw.get("id")
@@ -194,6 +238,7 @@ def fetch_classroom_domain(
                 "owner_username": owner_username,
                 "teachers": teacher_entries,
                 "students": student_entries,
+                "documents": documents_by_class.get(cid, []),
             }
         )
 
