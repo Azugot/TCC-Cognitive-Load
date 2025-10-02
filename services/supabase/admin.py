@@ -93,9 +93,10 @@ def fetch_classroom_domain(
         documents_resp = (
             client.table("classroom_documents")
             .select(
-                "id,classroom_id,file_name,storage_path,description,uploaded_by,created_at,updated_at"
+                "id,classroom_id,uploaded_by,file_name,storage_path,description,created_at,updated_at"
             )
             .in_("classroom_id", classroom_ids)
+            .order("created_at", desc=True)
             .execute()
         )
     except APIError as err:

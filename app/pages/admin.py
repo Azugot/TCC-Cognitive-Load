@@ -25,6 +25,8 @@ from services.supabase_client import (
 
 from app.config import (
     ROLE_PT_TO_DB,
+    SUPABASE_CLASS_DOCS_BUCKET,
+    SUPABASE_CLASS_DOCS_PREFIX,
     SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_URL,
     SUPABASE_USERS_TABLE,
@@ -362,6 +364,37 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                 else:
                     teacher_labels.setdefault(legacy_owner_id, owner_login)
 
+        documents_entries: List[Dict[str, Any]] = []
+        documents_map: Dict[str, Dict[str, Any]] = {}
+        for doc in item.get("documents", []) or []:
+            doc_id = doc.get("id")
+            uploader_label = (
+                doc.get("uploader_name")
+                or doc.get("uploader_login")
+                or doc.get("uploader_username")
+                or doc.get("uploaded_by")
+                or ""
+            )
+            entry = {
+                "id": doc_id,
+                "classroom_id": doc.get("classroom_id") or item.get("id"),
+                "filename": doc.get("file_name") or doc.get("filename") or "",
+                "storage_path": doc.get("storage_path") or "",
+                "description": (doc.get("description") or "").strip(),
+                "uploaded_by": doc.get("uploaded_by"),
+                "uploaded_by_login": doc.get("uploader_login"),
+                "uploaded_by_name": doc.get("uploader_name"),
+                "uploaded_by_username": doc.get("uploader_username"),
+                "uploaded_label": uploader_label,
+                "created_at": doc.get("created_at"),
+                "updated_at": doc.get("updated_at"),
+                "storage_bucket": SUPABASE_CLASS_DOCS_BUCKET,
+                "storage_prefix": SUPABASE_CLASS_DOCS_PREFIX,
+            }
+            documents_entries.append(entry)
+            if doc_id:
+                documents_map[doc_id] = entry
+
         normalized_classrooms.append(
             {
                 "id": item.get("id"),
@@ -374,15 +407,31 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                 "members": {
                     "teachers": sorted({uid for uid in teacher_ids if uid}),
                     "students": sorted({uid for uid in student_ids if uid}),
-                    "teacher_labels": {uid: label for uid, label in teacher_labels.items() if uid},
-                    "student_labels": {uid: label for uid, label in student_labels.items() if uid},
-                    "teacher_usernames": {uid: username for uid, username in teacher_usernames.items() if uid},
-                    "student_usernames": {uid: username for uid, username in student_usernames.items() if uid},
+                    "teacher_labels": {
+                        uid: label for uid, label in teacher_labels.items() if uid
+                    },
+                    "student_labels": {
+                        uid: label for uid, label in student_labels.items() if uid
+                    },
+                    "teacher_usernames": {
+                        uid: username
+                        for uid, username in teacher_usernames.items()
+                        if uid
+                    },
+                    "student_usernames": {
+                        uid: username
+                        for uid, username in student_usernames.items()
+                        if uid
+                    },
                 },
                 "owner_id": owner_id,
                 "owner_username": owner_username or teacher_labels.get(owner_id or "") or None,
                 "owner_login": owner_login or teacher_usernames.get(owner_id or "") or None,
                 "documents": list(item.get("documents") or []),
+                "documents_map": documents_map,
+                "documents_count": len(documents_entries),
+                "documents_bucket": SUPABASE_CLASS_DOCS_BUCKET,
+                "documents_prefix": SUPABASE_CLASS_DOCS_PREFIX,
             }
         )
 
