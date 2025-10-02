@@ -1560,7 +1560,7 @@ def build_teacher_view(
 
     tDocsUpload.upload(
         teacher_upload_document,
-        inputs=[tSelectClass, classrooms_state, subjects_state, auth_state],
+        inputs=[tDocsUpload, tSelectClass, classrooms_state, subjects_state, auth_state],
         outputs=[
             classrooms_state,
             subjects_state,
