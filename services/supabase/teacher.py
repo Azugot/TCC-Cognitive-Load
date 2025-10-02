@@ -5,7 +5,7 @@ Perfis: professores responsáveis por ajustar a experiência das turmas.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from postgrest.exceptions import APIError
 
@@ -40,6 +40,149 @@ def set_classroom_theme_config(
 
 
 __all__ = ["set_classroom_theme_config"]
+
+
+def create_classroom_document(
+    url: str,
+    key: str,
+    *,
+    classroom_id: str,
+    uploaded_by: str,
+    file_name: str,
+    storage_path: str,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Register a classroom document entry in Supabase."""
+
+    normalized_classroom = (classroom_id or "").strip()
+    if not normalized_classroom:
+        raise SupabaseOperationError("Sala inválida para registrar documento.")
+
+    normalized_uploader = (uploaded_by or "").strip()
+    if not normalized_uploader:
+        raise SupabaseOperationError(
+            "Usuário responsável ausente ao registrar documento da sala."
+        )
+
+    normalized_name = (file_name or "").strip()
+    if not normalized_name:
+        raise SupabaseOperationError(
+            "Informe o nome do arquivo ao registrar documento da sala."
+        )
+
+    normalized_path = (storage_path or "").strip()
+    if not normalized_path:
+        raise SupabaseOperationError(
+            "Informe o caminho no Storage ao registrar documento da sala."
+        )
+
+    payload: Dict[str, Any] = {
+        "classroom_id": normalized_classroom,
+        "uploaded_by": normalized_uploader,
+        "file_name": normalized_name,
+        "storage_path": normalized_path,
+    }
+
+    if description is not None:
+        payload["description"] = str(description).strip()
+
+    client = _get_client(url, key)
+    try:
+        response = client.table("classroom_documents").insert(payload).execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    rows = response.data or []
+    return rows[0] if rows else payload
+
+
+__all__.append("create_classroom_document")
+
+
+def _normalize_classroom_ids(
+    classroom_id: Optional[str], classroom_ids: Optional[Iterable[Optional[str]]]
+) -> List[str]:
+    ids: List[str] = []
+    if classroom_id:
+        ids.append(str(classroom_id).strip())
+    if classroom_ids:
+        for value in classroom_ids:
+            if not value:
+                continue
+            text = str(value).strip()
+            if text and text not in ids:
+                ids.append(text)
+    return [value for value in ids if value]
+
+
+def list_classroom_documents(
+    url: str,
+    key: str,
+    *,
+    classroom_id: Optional[str] = None,
+    classroom_ids: Optional[Iterable[Optional[str]]] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return classroom document metadata for the requested classrooms."""
+
+    client = _get_client(url, key)
+    query = (
+        client.table("classroom_documents")
+        .select(
+            "id,classroom_id,uploaded_by,file_name,storage_path,description,created_at,updated_at"
+        )
+        .order("created_at", desc=True)
+    )
+
+    normalized_ids = _normalize_classroom_ids(classroom_id, classroom_ids)
+    if normalized_ids:
+        if len(normalized_ids) == 1:
+            query = query.eq("classroom_id", normalized_ids[0])
+        else:
+            query = query.in_("classroom_id", normalized_ids)
+
+    if isinstance(limit, int) and limit > 0:
+        query = query.limit(limit)
+
+    try:
+        response = query.execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    return response.data or []
+
+
+__all__.append("list_classroom_documents")
+
+
+def delete_classroom_document(
+    url: str,
+    key: str,
+    *,
+    document_id: str,
+) -> None:
+    """Delete a classroom document record."""
+
+    normalized_id = (document_id or "").strip()
+    if not normalized_id:
+        raise SupabaseOperationError(
+            "Identificador do documento ausente para remoção."
+        )
+
+    client = _get_client(url, key)
+    try:
+        client.table("classroom_documents").delete().eq("id", normalized_id).execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+
+__all__.append("delete_classroom_document")
 
 
 def list_teacher_classroom_chats(
