@@ -89,6 +89,22 @@ def fetch_classroom_domain(
         raise SupabaseOperationError(str(exc)) from exc
     subject_rows = subjects_resp.data or []
 
+    try:
+        documents_resp = (
+            client.table("classroom_documents")
+            .select(
+                "id,classroom_id,uploaded_by,file_name,storage_path,description,created_at,updated_at"
+            )
+            .in_("classroom_id", classroom_ids)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+    document_rows = documents_resp.data or []
+
     user_ids: Set[Optional[str]] = set()
     for row in teacher_rows:
         user_ids.add(row.get("teacher_id"))
@@ -96,6 +112,8 @@ def fetch_classroom_domain(
         user_ids.add(row.get("student_id"))
     for row in classrooms_raw:
         user_ids.add(row.get("created_by"))
+    for row in document_rows:
+        user_ids.add(row.get("uploaded_by"))
 
     user_map = _fetch_users_map(client, user_ids, users_table=users_table)
 
@@ -153,6 +171,31 @@ def fetch_classroom_domain(
     for entries in subjects_by_class.values():
         entries.sort(key=lambda item: (item.get("name") or "").lower())
 
+    documents_by_class: Dict[str, List[Dict[str, Any]]] = {}
+    for row in document_rows:
+        cid = row.get("classroom_id")
+        if not cid:
+            continue
+        uploader_id = row.get("uploaded_by")
+        info = user_map.get(uploader_id, {})
+        entry = {
+            "id": row.get("id"),
+            "classroom_id": cid,
+            "uploaded_by": uploader_id,
+            "uploader_login": info.get("login"),
+            "uploader_name": info.get("display_name"),
+            "uploader_username": info.get("username"),
+            "file_name": row.get("file_name"),
+            "storage_path": row.get("storage_path"),
+            "description": row.get("description"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+        documents_by_class.setdefault(cid, []).append(entry)
+
+    for entries in documents_by_class.values():
+        entries.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+
     classrooms: List[Dict[str, Any]] = []
     for raw in classrooms_raw:
         cid = raw.get("id")
@@ -194,6 +237,7 @@ def fetch_classroom_domain(
                 "owner_username": owner_username,
                 "teachers": teacher_entries,
                 "students": student_entries,
+                "documents": documents_by_class.get(cid, []),
             }
         )
 
