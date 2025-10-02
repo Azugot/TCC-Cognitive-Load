@@ -425,13 +425,9 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
                     },
                 },
                 "owner_id": owner_id,
-                "owner_username": owner_username
-                or teacher_labels.get(owner_id or "")
-                or None,
-                "owner_login": owner_login
-                or teacher_usernames.get(owner_id or "")
-                or None,
-                "documents": documents_entries,
+                "owner_username": owner_username or teacher_labels.get(owner_id or "") or None,
+                "owner_login": owner_login or teacher_usernames.get(owner_id or "") or None,
+                "documents": list(item.get("documents") or []),
                 "documents_map": documents_map,
                 "documents_count": len(documents_entries),
                 "documents_bucket": SUPABASE_CLASS_DOCS_BUCKET,

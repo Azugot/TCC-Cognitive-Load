@@ -8,7 +8,7 @@ SUPABASE_USERS_TABLE = "users"
 SUPABASE_CHAT_BUCKET = os.getenv("SUPABASE_CHAT_BUCKET", "chat-logs")
 SUPABASE_CHAT_STORAGE_PREFIX = os.getenv("SUPABASE_CHAT_STORAGE_PREFIX", "classrooms")
 SUPABASE_CLASS_DOCS_BUCKET = os.getenv(
-    "SUPABASE_CLASS_DOCS_BUCKET", "classroom-documents"
+    "SUPABASE_CLASS_DOCS_BUCKET", "classroom-classroom-docs"
 )
 SUPABASE_CLASS_DOCS_PREFIX = os.getenv(
     "SUPABASE_CLASS_DOCS_PREFIX", "classrooms"

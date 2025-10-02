@@ -174,27 +174,35 @@ def fetch_classroom_domain(
     documents_by_class: Dict[str, List[Dict[str, Any]]] = {}
     for row in document_rows:
         cid = row.get("classroom_id")
-        if not cid:
+        did = row.get("id")
+        if not cid or not did:
             continue
-        uploader_id = row.get("uploaded_by")
-        info = user_map.get(uploader_id, {})
+        uploader = user_map.get(row.get("uploaded_by"), {})
         entry = {
-            "id": row.get("id"),
+            "id": did,
             "classroom_id": cid,
-            "uploaded_by": uploader_id,
-            "uploader_login": info.get("login"),
-            "uploader_name": info.get("display_name"),
-            "uploader_username": info.get("username"),
+            "name": row.get("file_name"),
             "file_name": row.get("file_name"),
             "storage_path": row.get("storage_path"),
             "description": row.get("description"),
+            "uploaded_by": row.get("uploaded_by"),
+            "uploaded_by_login": uploader.get("login"),
+            "uploaded_by_username": uploader.get("username"),
+            "uploaded_by_name": uploader.get("display_name")
+            or uploader.get("username")
+            or uploader.get("login"),
             "created_at": row.get("created_at"),
             "updated_at": row.get("updated_at"),
         }
         documents_by_class.setdefault(cid, []).append(entry)
 
     for entries in documents_by_class.values():
-        entries.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        entries.sort(
+            key=lambda item: (
+                item.get("created_at") or item.get("updated_at") or ""
+            ),
+            reverse=True,
+        )
 
     classrooms: List[Dict[str, Any]] = []
     for raw in classrooms_raw:

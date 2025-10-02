@@ -279,3 +279,138 @@ def list_teacher_classroom_chats(
 
 
 __all__.append("list_teacher_classroom_chats")
+
+
+def create_classroom_document_record(
+    url: str,
+    key: str,
+    *,
+    classroom_id: str,
+    name: str,
+    storage_path: str,
+    uploaded_by: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Register a classroom document entry in Supabase."""
+
+    if not classroom_id:
+        raise SupabaseOperationError("Sala não informada para registrar o documento.")
+    if not storage_path:
+        raise SupabaseOperationError("Caminho do documento não informado.")
+    if not uploaded_by:
+        raise SupabaseOperationError(
+            "Usuário responsável pelo upload não informado."
+        )
+
+    client = _get_client(url, key)
+
+    payload: Dict[str, Any] = {
+        "classroom_id": classroom_id,
+        "file_name": (name or "Documento").strip() or "Documento",
+        "storage_path": storage_path,
+        "uploaded_by": uploaded_by,
+    }
+    if description is not None:
+        payload["description"] = (description or "").strip() or None
+
+    try:
+        resp = (
+            client.table("classroom_documents")
+            .insert(payload)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    data = getattr(resp, "data", None) if not isinstance(resp, dict) else resp.get("data")
+    document: Dict[str, Any] = {}
+    if isinstance(data, list) and data:
+        document = data[0]
+    elif isinstance(resp, dict):
+        document = resp
+
+    if document and "name" not in document:
+        document["name"] = document.get("file_name")
+
+    return document
+
+
+__all__.append("create_classroom_document_record")
+
+
+def update_classroom_document_record(
+    url: str,
+    key: str,
+    *,
+    document_id: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update classroom document metadata."""
+
+    if not document_id:
+        raise SupabaseOperationError("Documento não informado para atualização.")
+
+    updates: Dict[str, Any] = {}
+    if name is not None:
+        updates["file_name"] = (name or "Documento").strip() or "Documento"
+    if description is not None:
+        updates["description"] = (description or "").strip() or None
+
+    if not updates:
+        return {}
+
+    client = _get_client(url, key)
+
+    try:
+        resp = (
+            client.table("classroom_documents")
+            .update(updates)
+            .eq("id", document_id)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+    data = getattr(resp, "data", None) if not isinstance(resp, dict) else resp.get("data")
+    document: Dict[str, Any] = {}
+    if isinstance(data, list) and data:
+        document = data[0]
+    elif isinstance(resp, dict):
+        document = resp
+
+    if document and "name" not in document:
+        document["name"] = document.get("file_name")
+
+    return document
+
+
+__all__.append("update_classroom_document_record")
+
+
+def delete_classroom_document_record(
+    url: str,
+    key: str,
+    *,
+    document_id: str,
+) -> None:
+    """Remove a classroom document metadata entry."""
+
+    if not document_id:
+        raise SupabaseOperationError("Documento não informado para exclusão.")
+
+    client = _get_client(url, key)
+
+    try:
+        client.table("classroom_documents").delete().eq("id", document_id).execute()
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:
+        raise SupabaseOperationError(str(exc)) from exc
+
+
+__all__.append("delete_classroom_document_record")
