@@ -349,7 +349,7 @@ def _render_documents_md(cls_id, classrooms):
 
     lines = [f"### Materiais cadastrados ({len(docs)})"]
     for doc in docs:
-        name = (doc.get("name") or "Documento").strip() or "Documento"
+        name = (doc.get("name") or doc.get("file_name") or "Documento").strip() or "Documento"
         size = _format_filesize(doc.get("file_size"))
         author = (
             doc.get("uploaded_by_name")
@@ -362,13 +362,18 @@ def _render_documents_md(cls_id, classrooms):
         details = [part for part in (size, author, timestamp) if part]
         detail_text = f" — {', '.join(details)}" if details else ""
         lines.append(f"- 📄 **{name}**{detail_text}")
-        storage_bucket = doc.get("storage_bucket")
         storage_path = doc.get("storage_path")
-        if storage_bucket and storage_path:
-            lines.append(f"  - Storage: `{storage_bucket}/{storage_path}`")
-        content_type = doc.get("content_type")
-        if content_type:
-            lines.append(f"  - Tipo: `{content_type}`")
+        if storage_path:
+            storage_bucket = doc.get("storage_bucket") or SUPABASE_CLASS_DOCS_BUCKET
+            if storage_bucket:
+                lines.append(
+                    f"  - Storage: `{storage_bucket}/{storage_path}`"
+                )
+            else:
+                lines.append(f"  - Storage: `{storage_path}`")
+        description = (doc.get("description") or "").strip()
+        if description:
+            lines.append(f"  - Descrição: {description}")
     return "\n".join(lines)
 
 
@@ -379,7 +384,11 @@ def _documents_dropdown(classrooms, cls_id, current_value=None):
         doc_id = doc.get("id")
         if not doc_id:
             continue
-        name = (doc.get("name") or str(doc_id)).strip() or str(doc_id)
+        name = (
+            doc.get("name")
+            or doc.get("file_name")
+            or str(doc_id)
+        ).strip() or str(doc_id)
         size = _format_filesize(doc.get("file_size"))
         label = f"{name} ({size})" if size else name
         choices.append((label, doc_id))
@@ -923,12 +932,29 @@ def teacher_upload_document(
     if not content_type and file_path:
         guessed, _ = mimetypes.guess_type(file_path)
         content_type = guessed or None
-    file_size = None
-    if file_path and os.path.isfile(file_path):
-        try:
-            file_size = os.path.getsize(file_path)
-        except OSError:
-            file_size = None
+
+    if not file_path or not os.path.isfile(file_path):
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Não foi possível acessar o arquivo selecionado."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
+
+    uploader_id = _auth_user_id(auth)
+    if not uploader_id:
+        return (
+            classrooms,
+            subjects_by_class,
+            gr.update(value="⚠️ Faça login novamente para enviar materiais."),
+            gr.update(value=_render_documents_md(selected_id, classrooms)),
+            _documents_dropdown(classrooms, selected_id),
+            gr.update(value=""),
+            gr.update(value=None),
+        )
 
     try:
         stored_path = upload_file_to_bucket(
@@ -962,19 +988,14 @@ def teacher_upload_document(
             gr.update(value=None),
         )
 
-    uploader_id = _auth_user_id(auth)
-
     try:
         created = create_classroom_document_record(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             classroom_id=selected_id,
             name=display_name,
-            storage_bucket=SUPABASE_CLASS_DOCS_BUCKET,
             storage_path=stored_path or storage_path,
             uploaded_by=uploader_id,
-            file_size=file_size,
-            content_type=content_type,
         )
     except SupabaseConfigurationError:
         try:

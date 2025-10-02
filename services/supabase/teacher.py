@@ -144,38 +144,31 @@ def create_classroom_document_record(
     *,
     classroom_id: str,
     name: str,
-    storage_bucket: str,
     storage_path: str,
     uploaded_by: Optional[str] = None,
-    file_size: Optional[int] = None,
-    content_type: Optional[str] = None,
+    description: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Register a classroom document entry in Supabase."""
 
     if not classroom_id:
         raise SupabaseOperationError("Sala não informada para registrar o documento.")
-    if not storage_bucket:
-        raise SupabaseOperationError("Bucket do documento não informado.")
     if not storage_path:
         raise SupabaseOperationError("Caminho do documento não informado.")
+    if not uploaded_by:
+        raise SupabaseOperationError(
+            "Usuário responsável pelo upload não informado."
+        )
 
     client = _get_client(url, key)
 
     payload: Dict[str, Any] = {
         "classroom_id": classroom_id,
-        "name": name or "Documento",
-        "storage_bucket": storage_bucket,
+        "file_name": (name or "Documento").strip() or "Documento",
         "storage_path": storage_path,
+        "uploaded_by": uploaded_by,
     }
-    if uploaded_by:
-        payload["uploaded_by"] = uploaded_by
-    if file_size is not None:
-        try:
-            payload["file_size"] = int(file_size)
-        except (TypeError, ValueError):
-            pass
-    if content_type:
-        payload["content_type"] = content_type
+    if description is not None:
+        payload["description"] = (description or "").strip() or None
 
     try:
         resp = (
@@ -189,11 +182,16 @@ def create_classroom_document_record(
         raise SupabaseOperationError(str(exc)) from exc
 
     data = getattr(resp, "data", None) if not isinstance(resp, dict) else resp.get("data")
+    document: Dict[str, Any] = {}
     if isinstance(data, list) and data:
-        return data[0]
-    if isinstance(resp, dict):
-        return resp
-    return {}
+        document = data[0]
+    elif isinstance(resp, dict):
+        document = resp
+
+    if document and "name" not in document:
+        document["name"] = document.get("file_name")
+
+    return document
 
 
 __all__.append("create_classroom_document_record")
@@ -205,6 +203,7 @@ def update_classroom_document_record(
     *,
     document_id: str,
     name: Optional[str] = None,
+    description: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Update classroom document metadata."""
 
@@ -213,7 +212,9 @@ def update_classroom_document_record(
 
     updates: Dict[str, Any] = {}
     if name is not None:
-        updates["name"] = name or "Documento"
+        updates["file_name"] = (name or "Documento").strip() or "Documento"
+    if description is not None:
+        updates["description"] = (description or "").strip() or None
 
     if not updates:
         return {}
@@ -233,11 +234,16 @@ def update_classroom_document_record(
         raise SupabaseOperationError(str(exc)) from exc
 
     data = getattr(resp, "data", None) if not isinstance(resp, dict) else resp.get("data")
+    document: Dict[str, Any] = {}
     if isinstance(data, list) and data:
-        return data[0]
-    if isinstance(resp, dict):
-        return resp
-    return {}
+        document = data[0]
+    elif isinstance(resp, dict):
+        document = resp
+
+    if document and "name" not in document:
+        document["name"] = document.get("file_name")
+
+    return document
 
 
 __all__.append("update_classroom_document_record")

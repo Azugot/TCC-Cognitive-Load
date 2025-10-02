@@ -93,7 +93,7 @@ def fetch_classroom_domain(
         documents_resp = (
             client.table("classroom_documents")
             .select(
-                "id,classroom_id,name,storage_bucket,storage_path,content_type,file_size,uploaded_by,created_at,updated_at"
+                "id,classroom_id,file_name,storage_path,description,uploaded_by,created_at,updated_at"
             )
             .in_("classroom_id", classroom_ids)
             .execute()
@@ -180,22 +180,28 @@ def fetch_classroom_domain(
         entry = {
             "id": did,
             "classroom_id": cid,
-            "name": row.get("name"),
-            "storage_bucket": row.get("storage_bucket"),
+            "name": row.get("file_name"),
+            "file_name": row.get("file_name"),
             "storage_path": row.get("storage_path"),
-            "content_type": row.get("content_type"),
-            "file_size": row.get("file_size"),
+            "description": row.get("description"),
             "uploaded_by": row.get("uploaded_by"),
             "uploaded_by_login": uploader.get("login"),
             "uploaded_by_username": uploader.get("username"),
-            "uploaded_by_name": uploader.get("display_name") or uploader.get("username") or uploader.get("login"),
+            "uploaded_by_name": uploader.get("display_name")
+            or uploader.get("username")
+            or uploader.get("login"),
             "created_at": row.get("created_at"),
             "updated_at": row.get("updated_at"),
         }
         documents_by_class.setdefault(cid, []).append(entry)
 
     for entries in documents_by_class.values():
-        entries.sort(key=lambda item: (item.get("name") or "").lower())
+        entries.sort(
+            key=lambda item: (
+                item.get("created_at") or item.get("updated_at") or ""
+            ),
+            reverse=True,
+        )
 
     classrooms: List[Dict[str, Any]] = []
     for raw in classrooms_raw:
