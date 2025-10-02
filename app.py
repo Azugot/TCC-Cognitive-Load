@@ -69,6 +69,11 @@ def _logout_cleanup():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
+        gr.update(value="ℹ️ Selecione uma sala para visualizar os materiais."),
+        gr.update(choices=[], value=None),
+        [],
+        gr.update(visible=False, value=None, label="⬇️ Baixar material", file_name=None),
+        gr.update(value="ℹ️ Nenhum material disponível para esta sala."),
     )
 
 
@@ -175,6 +180,11 @@ def build_app() -> gr.Blocks:
                 student_views.rooms_dropdown,
                 student_views.rooms_info,
                 student_selected_class,
+                student_views.documents_markdown,
+                student_views.documents_dropdown,
+                student_views.documents_state,
+                student_views.documents_download_button,
+                student_views.documents_notice,
             ],
         ).then(
             student_history_dropdown,
@@ -293,7 +303,16 @@ def build_app() -> gr.Blocks:
             ],
         ).then(
             _logout_cleanup,
-            outputs=[teacher_view.container, student_views.rooms_view, student_views.setup_view],
+            outputs=[
+                teacher_view.container,
+                student_views.rooms_view,
+                student_views.setup_view,
+                student_views.documents_markdown,
+                student_views.documents_dropdown,
+                student_views.documents_state,
+                student_views.documents_download_button,
+                student_views.documents_notice,
+            ],
         )
 
         admin_views.btn_logout.click(
@@ -313,7 +332,16 @@ def build_app() -> gr.Blocks:
             ],
         ).then(
             _logout_cleanup,
-            outputs=[teacher_view.container, student_views.rooms_view, student_views.setup_view],
+            outputs=[
+                teacher_view.container,
+                student_views.rooms_view,
+                student_views.setup_view,
+                student_views.documents_markdown,
+                student_views.documents_dropdown,
+                student_views.documents_state,
+                student_views.documents_download_button,
+                student_views.documents_notice,
+            ],
         )
 
         demo.queue()
