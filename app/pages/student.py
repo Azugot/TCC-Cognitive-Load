@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -16,6 +18,7 @@ from services.supabase_client import (
     SupabaseOperationError,
     create_chat_record,
     download_file_from_bucket,
+    fetch_student_document_metadata,
     list_student_chats,
     upload_file_to_bucket,
 )
@@ -303,6 +306,22 @@ def _student_documents_notice(docs: Sequence[Dict[str, Any]]) -> str:
     return "ℹ️ Selecione um material e clique em baixar para fazer o download."
 
 
+def _sanitize_download_filename(name: str, fallback: str = "material") -> str:
+    base = (name or "").strip() or fallback
+    sanitized = re.sub(r"[\\/:*?\"<>|]+", "_", base)
+    sanitized = sanitized.strip("._") or fallback
+    return sanitized
+
+
+def _student_store_download(bytes_data: bytes, filename: str) -> str:
+    safe_name = _sanitize_download_filename(filename)
+    tmp_dir = tempfile.mkdtemp(prefix="student-doc-")
+    file_path = os.path.join(tmp_dir, safe_name)
+    with open(file_path, "wb") as buffer:
+        buffer.write(bytes_data)
+    return file_path
+
+
 def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
@@ -437,22 +456,47 @@ def student_on_document_select(doc_id, documents_state):
 
 
 def student_download_document(doc_id, cls_id, documents_state, auth):
-    if not _auth_user_id(auth):
-        return _student_reset_download_button(), gr.update(value="⚠️ Faça login novamente para baixar materiais.")
+    student_id = _auth_user_id(auth)
 
-    docs = documents_state if isinstance(documents_state, list) else []
-    doc = _student_find_document(docs, doc_id)
-    if not doc:
-        return _student_reset_download_button(), gr.update(value="⚠️ Material não encontrado.")
+    if not student_id:
+        return _student_reset_download_button(), gr.update(
+            value="⚠️ Faça login novamente para baixar materiais."
+        )
+
+    if not doc_id:
+        return _student_reset_download_button(), gr.update(
+            value="⚠️ Selecione um material válido."
+        )
+
+    try:
+        doc = fetch_student_document_metadata(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            student_id=student_id,
+            document_id=doc_id,
+        )
+    except SupabaseConfigurationError:
+        return _student_reset_download_button(), gr.update(
+            value="⚠️ Configure o Supabase para validar materiais."
+        )
+    except SupabaseOperationError as err:
+        message = str(err).strip() or "Erro ao localizar material."
+        if not message.startswith(("⚠️", "❌", "ℹ️")):
+            message = f"❌ {message}"
+        return _student_reset_download_button(), gr.update(value=message)
 
     doc_classroom = doc.get("classroom_id")
     if doc_classroom and cls_id and str(doc_classroom) != str(cls_id):
-        return _student_reset_download_button(), gr.update(value="⚠️ Material não pertence à sala selecionada.")
+        return _student_reset_download_button(), gr.update(
+            value="⚠️ Material não pertence à sala selecionada."
+        )
 
     bucket = doc.get("storage_bucket") or SUPABASE_CLASS_DOCS_BUCKET
     path = doc.get("storage_path")
     if not bucket or not path:
-        return _student_reset_download_button(), gr.update(value="⚠️ Material sem arquivo disponível para download.")
+        return _student_reset_download_button(), gr.update(
+            value="⚠️ Material sem arquivo disponível para download."
+        )
 
     try:
         file_bytes = download_file_from_bucket(
@@ -462,23 +506,29 @@ def student_download_document(doc_id, cls_id, documents_state, auth):
             storage_path=path,
         )
     except SupabaseConfigurationError:
-        return _student_reset_download_button(), gr.update(value="⚠️ Configure o Supabase Storage para baixar materiais.")
+        return _student_reset_download_button(), gr.update(
+            value="⚠️ Configure o Supabase Storage para baixar materiais."
+        )
     except SupabaseOperationError as err:
-        return _student_reset_download_button(), gr.update(value=f"❌ Erro ao baixar material: {err}")
+        return _student_reset_download_button(), gr.update(
+            value=f"❌ Erro ao baixar material: {err}"
+        )
 
     name = (doc.get("name") or doc.get("file_name") or "material").strip() or "material"
     ext = os.path.splitext(path)[1]
     if ext and not name.lower().endswith(ext.lower()):
         name = f"{name}{ext}"
-    mime_type = doc.get("mime_type") or doc.get("content_type") or None
+
+    try:
+        download_path = _student_store_download(file_bytes, name)
+    except OSError as exc:
+        return _student_reset_download_button(), gr.update(
+            value=f"❌ Não foi possível preparar o download: {exc}"
+        )
+
     notice = f"✅ Download pronto: **{name}**."
     return (
-        gr.update(
-            value=file_bytes,
-            visible=True,
-            file_name=name,
-            mime_type=mime_type or "application/octet-stream",
-        ),
+        gr.update(value=download_path, visible=True),
         gr.update(value=notice),
     )
 

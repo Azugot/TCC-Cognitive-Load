@@ -216,3 +216,83 @@ def list_student_chats(
 
 
 __all__.append("list_student_chats")
+
+
+def fetch_student_document_metadata(
+    url: str,
+    key: str,
+    *,
+    student_id: str,
+    document_id: str,
+) -> Dict[str, Any]:
+    """Return metadata for a classroom document accessible to the student."""
+
+    normalized_document_id = (document_id or "").strip()
+    if not normalized_document_id:
+        raise SupabaseOperationError(
+            "Identificador do material ausente para download."
+        )
+
+    normalized_student_id = (student_id or "").strip()
+    if not normalized_student_id:
+        raise SupabaseOperationError(
+            "Aluno não informado para validar acesso ao material."
+        )
+
+    client = _get_client(url, key)
+
+    try:
+        document_resp = (
+            client.table("classroom_documents")
+            .select(
+                "id,classroom_id,file_name,storage_path,description,created_at,updated_at,uploaded_by"
+            )
+            .eq("id", normalized_document_id)
+            .limit(1)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:  # pragma: no cover - erros inesperados de client
+        raise SupabaseOperationError(str(exc)) from exc
+
+    rows = document_resp.data or []
+    if not rows:
+        raise SupabaseOperationError("Material não encontrado.")
+
+    document = rows[0]
+    classroom_id = document.get("classroom_id")
+    if not classroom_id:
+        raise SupabaseOperationError(
+            "Material sem sala associada. Entre em contato com o professor."
+        )
+
+    try:
+        membership_resp = (
+            client.table("classroom_students")
+            .select("status")
+            .eq("classroom_id", classroom_id)
+            .eq("student_id", normalized_student_id)
+            .limit(1)
+            .execute()
+        )
+    except APIError as err:
+        raise _handle_api_error(err) from err
+    except Exception as exc:  # pragma: no cover - erros inesperados de client
+        raise SupabaseOperationError(str(exc)) from exc
+
+    membership_rows = membership_resp.data or []
+    if not membership_rows:
+        raise SupabaseOperationError("Você não tem acesso a este material.")
+
+    status = (membership_rows[0].get("status") or "").strip().lower()
+    if status and status != "active":
+        raise SupabaseOperationError("Você não tem acesso a este material.")
+
+    if "name" not in document:
+        document["name"] = document.get("file_name")
+
+    return document
+
+
+__all__.append("fetch_student_document_metadata")
