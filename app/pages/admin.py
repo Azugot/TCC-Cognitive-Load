@@ -464,34 +464,82 @@ def _sync_domain_after_auth(auth, classrooms, subjects):
     return classes, subjects_map
 
 
-def _admin_classrooms_outputs(classrooms, notice=""):
+def _admin_classrooms_outputs(
+    classrooms,
+    notice="",
+    current_edit=None,
+    current_members=None,
+):
     md = _render_classrooms_md(classrooms or [])
     md = _merge_notice(md, notice)
-    dd1, dd2 = _refresh_cls_dropdown(classrooms or [])
+    dd1, dd2 = _refresh_cls_dropdown(
+        classrooms or [],
+        current_edit=current_edit,
+        current_members=current_members,
+    )
     return md, dd1, dd2
 
 
-def _refresh_cls_dropdown(classrooms):
-    choices = [(c["name"], c["id"]) for c in (classrooms or [])]
-    return gr.update(choices=choices), gr.update(choices=choices)
+def _refresh_cls_dropdown(classrooms, current_edit=None, current_members=None):
+    choices = [
+        (c.get("name") or c.get("id") or "Sala", c.get("id"))
+        for c in (classrooms or [])
+        if c.get("id")
+    ]
+    valid_ids = [value for _, value in choices]
+
+    def _safe(current):
+        if current in valid_ids:
+            return current
+        return valid_ids[0] if valid_ids else None
+
+    return (
+        gr.update(choices=choices, value=_safe(current_edit)),
+        gr.update(choices=choices, value=_safe(current_members)),
+    )
 
 
-def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
+def add_classroom(
+    name,
+    theme,
+    desc,
+    locked,
+    classrooms,
+    subjects,
+    auth,
+    current_edit=None,
+    current_members=None,
+):
     role = (auth or {}).get("role")
     if (role or "").lower() not in ("admin", "professor"):
-        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, "⛔ Apenas professores ou admins podem criar salas.")
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms,
+            "⛔ Apenas professores ou admins podem criar salas.",
+            current_edit=current_edit,
+            current_members=current_members,
+        )
         return classrooms, subjects, md, dd1, dd2
 
     creator_id = _auth_user_id(auth)
     if not creator_id:
-        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, "Warning: Faça login para criar salas.")
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms,
+            "Warning: Faça login para criar salas.",
+            current_edit=current_edit,
+            current_members=current_members,
+        )
         return classrooms, subjects, md, dd1, dd2
 
     name = (name or "").strip()
     theme = (theme or "").strip() or name
     description = (desc or "").strip() or ""
     if not name:
-        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, "Warning: Informe um nome para a sala.")
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms,
+            "Warning: Informe um nome para a sala.",
+            current_edit=current_edit,
+            current_members=current_members,
+        )
         return classrooms, subjects, md, dd1, dd2
 
     try:
@@ -508,10 +556,17 @@ def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
         md, dd1, dd2 = _admin_classrooms_outputs(
             classrooms,
             "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
+            current_edit=current_edit,
+            current_members=current_members,
         )
         return classrooms, subjects, md, dd1, dd2
     except SupabaseOperationError as err:
-        md, dd1, dd2 = _admin_classrooms_outputs(classrooms, f"ERROR: Erro ao criar sala: {err}")
+        md, dd1, dd2 = _admin_classrooms_outputs(
+            classrooms,
+            f"ERROR: Erro ao criar sala: {err}",
+            current_edit=current_edit,
+            current_members=current_members,
+        )
         return classrooms, subjects, md, dd1, dd2
 
     classroom_id = (created or {}).get("id")
@@ -530,13 +585,24 @@ def add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
             print(f"[SUPABASE] Falha ao registrar professor responsável: {err}")
 
     classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-    md, dd1, dd2 = _admin_classrooms_outputs(classes, notice or "OK: Sala criada.")
+    selected_edit = classroom_id or current_edit
+    md, dd1, dd2 = _admin_classrooms_outputs(
+        classes,
+        notice or "OK: Sala criada.",
+        current_edit=selected_edit,
+        current_members=current_members,
+    )
     return classes, subjects_map, md, dd1, dd2
 
 
-def refresh_classrooms(classrooms, subjects):
+def refresh_classrooms(classrooms, subjects, current_edit=None, current_members=None):
     classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-    md, dd1, dd2 = _admin_classrooms_outputs(classes, notice)
+    md, dd1, dd2 = _admin_classrooms_outputs(
+        classes,
+        notice,
+        current_edit=current_edit,
+        current_members=current_members,
+    )
     return classes, subjects_map, md, dd1, dd2
 
 
@@ -1035,7 +1101,9 @@ def build_admin_views(
                 btnAddClass = gr.Button("➕ Criar sala", variant="primary")
         with gr.Accordion("Editar/Arquivar/Excluir", open=False):
             with gr.Row():
-                clsSelect = gr.Dropdown(choices=[], label="Selecione a sala", value=None)
+                clsSelect = gr.Dropdown(
+                    choices=[], label="Selecione a sala", value=None, allow_custom_value=True
+                )
                 btnRefreshCls = gr.Button("Recarregar Dados")
             with gr.Row():
                 eName = gr.Textbox(label="Nome")
@@ -1049,7 +1117,9 @@ def build_admin_views(
                 btnDeleteCls = gr.Button("🗑️ Excluir sala", variant="stop")
         with gr.Accordion("Membros (Professores/Alunos)", open=False):
             with gr.Row():
-                membClass = gr.Dropdown(choices=[], label="Sala", value=None)
+                membClass = gr.Dropdown(
+                    choices=[], label="Sala", value=None, allow_custom_value=True
+                )
             with gr.Row():
                 addTeacher = gr.Textbox(label="Adicionar professor (username)")
                 btnAddTeacher = gr.Button("👩‍🏫 Adicionar")
@@ -1075,7 +1145,9 @@ def build_admin_views(
     with gr.Column(visible=False) as viewHistory:
         gr.Markdown("## 🗂️ Histórico de Chats")
         with gr.Row():
-            adHistoryClass = gr.Dropdown(choices=[], label="Sala", value="")
+            adHistoryClass = gr.Dropdown(
+                choices=[], label="Sala", value="", allow_custom_value=True
+            )
             adHistoryRefresh = gr.Button("Recarregar Dados Atualizar histórico")
         adHistoryInfo = gr.Markdown("Selecione uma sala para filtrar ou mantenha em branco para ver todas.")
         adHistoryTable = gr.Dataframe(
@@ -1093,7 +1165,9 @@ def build_admin_views(
              
         )
         with gr.Row():
-            adHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
+            adHistoryChat = gr.Dropdown(
+                choices=[], label="Chat registrado", value=None, allow_custom_value=True
+            )
             adHistoryLoad = gr.Button("📄 Ver detalhes")
         adHistoryMetadata = gr.Markdown(
             "Info: Selecione um chat para visualizar os detalhes.",
@@ -1133,7 +1207,9 @@ def build_admin_views(
     with gr.Column(visible=False) as viewEvaluate:
         gr.Markdown("## 📝 Avaliar Chats")
         with gr.Row():
-            evalChatId = gr.Dropdown(choices=[], label="Chat para avaliar", value=None)
+            evalChatId = gr.Dropdown(
+                choices=[], label="Chat para avaliar", value=None, allow_custom_value=True
+            )
             btnEvalRefresh = gr.Button("Recarregar Dados")
         evalCurrent = gr.Markdown("")
         with gr.Row():
@@ -1185,7 +1261,17 @@ def build_admin_views(
 
     btnAddClass.click(
         add_classroom,
-        inputs=[clsName, clsTheme, clsDesc, clsLocked, classrooms_state, subjects_state, auth_state],
+        inputs=[
+            clsName,
+            clsTheme,
+            clsDesc,
+            clsLocked,
+            classrooms_state,
+            subjects_state,
+            auth_state,
+            clsSelect,
+            membClass,
+        ],
         outputs=[classrooms_state, subjects_state, classroomsMd, clsSelect, membClass],
     ).then(
         admin_refresh_subjects,
@@ -1199,7 +1285,7 @@ def build_admin_views(
 
     btnRefreshCls.click(
         refresh_classrooms,
-        inputs=[classrooms_state, subjects_state],
+        inputs=[classrooms_state, subjects_state, clsSelect, membClass],
         outputs=[classrooms_state, subjects_state, classroomsMd, clsSelect, membClass],
     ).then(
         admin_refresh_subjects,
