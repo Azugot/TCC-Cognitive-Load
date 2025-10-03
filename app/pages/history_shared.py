@@ -81,7 +81,7 @@ def _subjects_label(entry: Dict[str, Any]) -> str:
 
 def _comments_markdown(comments: List[Dict[str, Any]]) -> str:
     if not comments:
-        return "ℹ️ Nenhum comentário registrado ainda."
+        return "Info: Nenhum comentário registrado ainda."
     lines = ["### Comentários dos professores"]
     for comment in comments:
         author = comment.get("author_name") or comment.get("author_login") or "Professor(a)"
@@ -196,7 +196,7 @@ def prepare_history_listing(
     dropdown_label: Callable[[Dict[str, Any]], str],
     dropdown_value_key: str = "id",
     empty_message: str,
-    found_message: Union[str, Callable[[int], str]] = "✅ {count} chat(s) encontrados.",
+    found_message: Union[str, Callable[[int], str]] = "OK: {count} chat(s) encontrados.",
 ) -> Tuple[Any, List[Dict[str, Any]], Any, str, Optional[str]]:
     """Normalize shared outputs for history listings.
 
@@ -295,11 +295,11 @@ def load_chat_entry(
         return ChatLoadResult(
             chat_id=None,
             chat=None,
-            metadata_md="⚠️ Selecione um chat válido.",
+            metadata_md="Warning: Selecione um chat válido.",
             summary_text="",
             preview_text="",
             evaluation_text="",
-            comments_md="ℹ️ Nenhum comentário registrado ainda.",
+            comments_md="Info: Nenhum comentário registrado ainda.",
             transcript_text="",
             download_path=None,
             download_visible=False,
@@ -323,9 +323,9 @@ def load_chat_entry(
                 storage_path=path,
             )
         except SupabaseConfigurationError:
-            notice_msg = "⚠️ Configure o Supabase Storage para baixar o PDF do chat."
+            notice_msg = "Warning: Configure o Supabase Storage para baixar o PDF do chat."
         except SupabaseOperationError as err:
-            notice_msg = f"❌ Erro ao baixar PDF: {err}"
+            notice_msg = f"ERROR: Erro ao baixar PDF: {err}"
             notice_is_error = True
         else:
             try:
@@ -334,11 +334,11 @@ def load_chat_entry(
                     download_path = tmp.name
                 transcript_text = extractPdfText(download_path) or ""
             except Exception as exc:  # pragma: no cover - depende de I/O externo
-                notice_msg = f"⚠️ Não foi possível ler o PDF: {exc}"
+                notice_msg = f"Warning: Não foi possível ler o PDF: {exc}"
                 download_path = None
                 transcript_text = ""
     else:
-        notice_msg = "ℹ️ Este chat não possui PDF armazenado."
+        notice_msg = "Info: Este chat não possui PDF armazenado."
 
     if current_download_path and current_download_path != download_path:
         if os.path.exists(current_download_path):
@@ -401,21 +401,21 @@ def generate_auto_evaluation(
     history_entries: Optional[List[Dict[str, Any]]],
 ):
     if not chat_id:
-        return "", history_entries or [], None, "⚠️ Selecione um chat."
+        return "", history_entries or [], None, "Warning: Selecione um chat."
     if _vertex_err:
-        return "", history_entries or [], None, f"⚠️ Vertex indisponível: {_vertex_err}"
+        return "", history_entries or [], None, f"Warning: Vertex indisponível: {_vertex_err}"
     if not VERTEX_CFG:
-        return "", history_entries or [], None, "⚠️ Configure as credenciais do Vertex para gerar avaliações."
+        return "", history_entries or [], None, "Warning: Configure as credenciais do Vertex para gerar avaliações."
 
     entries = history_entries or []
     chat = next((entry for entry in entries if entry.get("id") == chat_id), None)
     if not chat:
-        return "", entries, None, "⚠️ Chat não encontrado."
+        return "", entries, None, "Warning: Chat não encontrado."
 
     transcript_text = (transcript or chat.get("transcript_text") or "").strip()
     if not transcript_text:
         metadata = _chat_metadata_md(chat)
-        return "", entries, metadata, "⚠️ Transcript do chat indisponível para avaliação."
+        return "", entries, metadata, "Warning: Transcript do chat indisponível para avaliação."
 
     try:
         evaluation_payload = generate_chat_evaluation(
@@ -425,7 +425,7 @@ def generate_auto_evaluation(
         )
     except Exception as exc:  # pragma: no cover - depende de chamada externa
         metadata = _chat_metadata_md(chat)
-        return "", entries, metadata, f"❌ Erro ao gerar avaliação: {exc}"
+        return "", entries, metadata, f"ERROR: Erro ao gerar avaliação: {exc}"
 
     if isinstance(evaluation_payload, dict):
         evaluation_text = evaluation_payload.get("text") or ""
@@ -437,7 +437,7 @@ def generate_auto_evaluation(
         raw_response = None
 
     persisted_entry: Optional[Dict[str, Any]] = None
-    notice = "✅ Avaliação automática gerada."
+    notice = "OK: Avaliação automática gerada."
     extra_payload = {
         "text": evaluation_text,
         "score": evaluation_score,
@@ -458,20 +458,20 @@ def generate_auto_evaluation(
         stored_score = persisted_entry.get("score", evaluation_score)
         stored_at = persisted_entry.get("created_at")
         notice = (
-            f"✅ Avaliação automática registrada (nota {float(stored_score):.1f})."
+            f"OK: Avaliação automática registrada (nota {float(stored_score):.1f})."
             if stored_score is not None
-            else "✅ Avaliação automática registrada."
+            else "OK: Avaliação automática registrada."
         )
     except SupabaseConfigurationError:
         stored_text = evaluation_text
         stored_score = evaluation_score
         stored_at = None
-        notice = "⚠️ Configure o Supabase para salvar a avaliação automaticamente."
+        notice = "Warning: Configure o Supabase para salvar a avaliação automaticamente."
     except SupabaseOperationError as err:
         stored_text = evaluation_text
         stored_score = evaluation_score
         stored_at = None
-        notice = f"❌ Avaliação não salva no Supabase: {err}"
+        notice = f"ERROR: Avaliação não salva no Supabase: {err}"
 
     if stored_at:
         chat["auto_evaluation_updated_at"] = stored_at
@@ -508,9 +508,9 @@ def append_chat_comment(
 ):
     text = (comment_text or "").strip()
     if not chat_id:
-        return history_entries or [], None, "⚠️ Selecione um chat."
+        return history_entries or [], None, "Warning: Selecione um chat."
     if not text:
-        return history_entries or [], None, "⚠️ Escreva um comentário antes de enviar."
+        return history_entries or [], None, "Warning: Escreva um comentário antes de enviar."
 
     try:
         numeric_rating = float(rating)
@@ -518,7 +518,7 @@ def append_chat_comment(
         return (
             history_entries or [],
             None,
-            "⚠️ Informe uma nota numérica antes de registrar o comentário.",
+            "Warning: Informe uma nota numérica antes de registrar o comentário.",
         )
 
     try:
@@ -533,9 +533,9 @@ def append_chat_comment(
             score=numeric_rating,
         )
     except SupabaseConfigurationError:
-        return history_entries or [], None, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para salvar comentários."
+        return history_entries or [], None, "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para salvar comentários."
     except SupabaseOperationError as err:
-        return history_entries or [], None, f"❌ Erro ao salvar comentário: {err}"
+        return history_entries or [], None, f"ERROR: Erro ao salvar comentário: {err}"
 
     updated: List[Dict[str, Any]] = []
     comments_md = ""
@@ -547,14 +547,14 @@ def append_chat_comment(
             chat["teacher_comments"] = comments
             comments_md = _comments_markdown(comments)
         updated.append(chat)
-    message = "✅ Comentário registrado."
+    message = "OK: Comentário registrado."
     score = entry.get("score")
     try:
         if score is not None:
-            message = f"✅ Comentário registrado com nota {float(score):.1f}."
+            message = f"OK: Comentário registrado com nota {float(score):.1f}."
     except (TypeError, ValueError):
         if score not in (None, ""):
-            message = f"✅ Comentário registrado com nota {score}."
+            message = f"OK: Comentário registrado com nota {score}."
 
     return updated, comments_md, message
 

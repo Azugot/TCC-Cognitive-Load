@@ -60,7 +60,7 @@ def addMessage(history, message, docsState, authState, currentChatId, chatsState
                 textPdf = extractPdfText(filePath)
                 name = os.path.basename(filePath)
                 docsState[name] = textPdf
-                part = f"Documento ativo: {name} ✅"
+                part = f"Documento ativo: {name} OK:"
                 history.append({"role": "user", "content": part})
                 chatsState[chat_id]["messages"].append(
                     {"role": "user", "content": part, "ts": _now_ts()})

@@ -100,7 +100,8 @@ def _student_history_dropdown(auth, classrooms, current_value=None):
     classes = _student_classes(auth, classrooms or [])
     choices = [(c["name"], c["id"]) for c in classes if c.get("id")]
     valid_ids = [value for _, value in choices]
-    value = current_value if current_value in valid_ids else (valid_ids[0] if valid_ids else None)
+    value = current_value if current_value in valid_ids else (
+        valid_ids[0] if valid_ids else None)
     return gr.update(choices=choices, value=value)
 
 
@@ -115,7 +116,7 @@ def student_history_refresh(auth, classroom_filter):
             gr.update(value=[]),
             [],
             gr.update(choices=[], value=None),
-            "⚠️ Faça login como aluno para consultar seus chats.",
+            "Warning: Faça login como aluno para consultar seus chats.",
             None,
         )
 
@@ -131,7 +132,7 @@ def student_history_refresh(auth, classroom_filter):
             gr.update(value=[]),
             [],
             gr.update(choices=[], value=None),
-            "⚠️ Configure o Supabase para carregar o histórico de chats.",
+            "Warning: Configure o Supabase para carregar o histórico de chats.",
             None,
         )
     except SupabaseOperationError as err:
@@ -139,7 +140,7 @@ def student_history_refresh(auth, classroom_filter):
             gr.update(value=[]),
             [],
             gr.update(choices=[], value=None),
-            f"❌ Erro ao consultar chats: {err}",
+            f"ERROR: Erro ao consultar chats: {err}",
             None,
         )
 
@@ -149,7 +150,8 @@ def student_history_refresh(auth, classroom_filter):
         return str(chat.get("classroom_id")) == classroom_filter
 
     def _dropdown_label(chat: Dict[str, Any]) -> str:
-        classroom = chat.get("classroom_name") or chat.get("classroom_id") or "Sala"
+        classroom = chat.get("classroom_name") or chat.get(
+            "classroom_id") or "Sala"
         started = _format_timestamp(chat.get("started_at"))
         return f"{classroom} — {started}"
 
@@ -160,8 +162,8 @@ def student_history_refresh(auth, classroom_filter):
         column_labels=HISTORY_TABLE_HEADERS,
         filter_fn=filter_fn,
         dropdown_label=_dropdown_label,
-        empty_message="ℹ️ Nenhum chat para o filtro selecionado.",
-        found_message="✅ {count} chat(s) encontrados.",
+        empty_message="Info: Nenhum chat para o filtro selecionado.",
+        found_message="OK: {count} chat(s) encontrados.",
     )
 
     return table_update, filtered, dropdown_update, message, default_id
@@ -171,13 +173,13 @@ def student_history_load_chat(chat_id, history_entries, current_download_path):
     result = load_chat_entry(chat_id, history_entries, current_download_path)
 
     if result.notice:
-        if result.notice.startswith("❌"):
+        if result.notice.startswith("ERROR:"):
             gr.Error(result.notice)
         else:
             gr.Warning(result.notice)
 
-    preview_value = result.preview_text or "ℹ️ Carregue um chat para visualizar a prévia."
-    summary_value = result.summary_text or "ℹ️ Este chat ainda não possui um resumo gerado."
+    preview_value = result.preview_text or "Info: Carregue um chat para visualizar a prévia."
+    summary_value = result.summary_text or "Info: Este chat ainda não possui um resumo gerado."
 
     return (
         result.chat_id,
@@ -197,7 +199,7 @@ def student_history_prepare_download(download_path):
     path = prepare_download(download_path)
     if path:
         return path
-    gr.Warning("⚠️ Nenhum arquivo disponível para download.")
+    gr.Warning("Warning: Nenhum arquivo disponível para download.")
     return None
 
 
@@ -212,12 +214,14 @@ def _student_classes(auth: Optional[Dict[str, Any]], classrooms: Iterable[Dict[s
 
 
 def _student_class_documents(classrooms, cls_id):
-    classroom = _get_class_by_id(classrooms, cls_id)
-    if not classroom:
-        return []
-    docs = classroom.get("documents") or []
-    return list(docs)
-
+    try:
+        classroom = _get_class_by_id(classrooms, cls_id)
+        if not classroom:
+            return []
+        docs = classroom.get("documents") or []
+        return list(docs)
+    except:
+        print("AAAAAAAAAAAAAAAAAA")
 
 def _format_filesize(value: Any) -> str:
     try:
@@ -236,55 +240,66 @@ def _format_filesize(value: Any) -> str:
 
 
 def _render_student_documents_md(cls_id: Optional[str], classrooms) -> str:
-    if not cls_id:
-        return "ℹ️ Selecione uma sala para visualizar os materiais."
-    docs = _student_class_documents(classrooms, cls_id)
-    if not docs:
-        return "ℹ️ Nenhum material enviado para esta sala ainda."
+    try:
+        if not cls_id:
+            return "Info: Selecione uma sala para visualizar os materiais."
+        docs = _student_class_documents(classrooms, cls_id)
+        if not docs:
+            return ""
 
-    lines = [f"### Materiais disponíveis ({len(docs)})"]
-    for doc in docs:
-        name = (doc.get("name") or doc.get("file_name") or "Material").strip() or "Material"
-        size = _format_filesize(doc.get("file_size"))
-        author = (
-            doc.get("uploaded_by_name")
-            or doc.get("uploaded_by_username")
-            or doc.get("uploaded_by_login")
-            or doc.get("uploaded_by")
-        )
-        updated_at = doc.get("updated_at") or doc.get("created_at")
-        timestamp = _format_timestamp(updated_at) if updated_at else None
-        details = [part for part in (size, author, timestamp) if part]
-        detail_text = f" — {', '.join(details)}" if details else ""
-        lines.append(f"- 📄 **{name}**{detail_text}")
-        storage_path = doc.get("storage_path")
-        if storage_path:
-            storage_bucket = doc.get("storage_bucket") or SUPABASE_CLASS_DOCS_BUCKET
-            if storage_bucket:
-                lines.append(f"  - Storage: `{storage_bucket}/{storage_path}`")
-            else:
-                lines.append(f"  - Storage: `{storage_path}`")
-        description = (doc.get("description") or "").strip()
-        if description:
-            lines.append(f"  - Descrição: {description}")
-    return "\n".join(lines)
+        lines = [f"### Materiais disponíveis ({len(docs)})"]
+        for doc in docs:
+            name = (doc.get("name") or doc.get("file_name")
+                    or "Material").strip() or "Material"
+            size = _format_filesize(doc.get("file_size"))
+            author = (
+                doc.get("uploaded_by_name")
+                or doc.get("uploaded_by_username")
+                or doc.get("uploaded_by_login")
+                or doc.get("uploaded_by")
+            )
+            updated_at = doc.get("updated_at") or doc.get("created_at")
+            timestamp = _format_timestamp(updated_at) if updated_at else None
+            details = [part for part in (size, author, timestamp) if part]
+            detail_text = f" — {', '.join(details)}" if details else ""
+            lines.append(f"- 📄 **{name}**{detail_text}")
+            storage_path = doc.get("storage_path")
+            if storage_path:
+                storage_bucket = doc.get(
+                    "storage_bucket") or SUPABASE_CLASS_DOCS_BUCKET
+                if storage_bucket:
+                    lines.append(
+                        f"  - Storage: `{storage_bucket}/{storage_path}`")
+                else:
+                    lines.append(f"  - Storage: `{storage_path}`")
+            description = (doc.get("description") or "").strip()
+            if description:
+                lines.append(f"  - Descrição: {description}")
+        return "\n".join(lines)
+    except:
+        print("ERRO AQUI")
 
 
 def _student_documents_dropdown(classrooms, cls_id, current_value=None):
-    docs = _student_class_documents(classrooms, cls_id)
-    choices = []
-    for doc in docs:
-        doc_id = doc.get("id")
-        if not doc_id:
-            continue
-        name = (doc.get("name") or doc.get("file_name") or str(doc_id)).strip() or str(doc_id)
-        size = _format_filesize(doc.get("file_size"))
-        label = f"{name} ({size})" if size else name
-        choices.append((label, doc_id))
-
-    valid_ids = [value for _, value in choices]
-    value = current_value if current_value in valid_ids else None
-    return gr.update(choices=choices, value=value)
+    try:
+        docs = _student_class_documents(classrooms, cls_id)
+        choices = []
+        if not docs:
+            return gr.update(choices=[], value=None)
+        for doc in docs:
+            doc_id = doc.get("id")
+            if not doc_id:
+                continue
+            name = (doc.get("name") or doc.get("file_name")
+                    or str(doc_id)).strip() or str(doc_id)
+            size = _format_filesize(doc.get("file_size"))
+            label = f"{name} ({size})" if size else name
+            choices.append((label, doc_id))
+        valid_ids = [value for _, value in choices]
+        value = current_value if current_value in valid_ids else None
+        return gr.update(choices=choices, value=value)
+    except:
+        print("ERROOOOOOOOOOOO KRL")
 
 
 def _student_find_document(documents: Iterable[Dict[str, Any]], doc_id: Optional[str]):
@@ -297,13 +312,13 @@ def _student_find_document(documents: Iterable[Dict[str, Any]], doc_id: Optional
 
 
 def _student_reset_download_button():
-    return gr.update(visible=False, value=None, label="⬇️ Baixar material", file_name=None)
+    return gr.update(visible=False, value=None, label=" Baixar material", file_name=None)
 
 
 def _student_documents_notice(docs: Sequence[Dict[str, Any]]) -> str:
     if not docs:
-        return "ℹ️ Nenhum material disponível para esta sala."
-    return "ℹ️ Selecione um material e clique em baixar para fazer o download."
+        return "Info: Nenhum material disponível para esta sala."
+    return "Info: Selecione um material e clique em baixar para fazer o download."
 
 
 def _sanitize_download_filename(name: str, fallback: str = "material") -> str:
@@ -325,7 +340,7 @@ def _student_store_download(bytes_data: bytes, filename: str) -> str:
 def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
     c = _get_class_by_id(classrooms, cls_id)
     if not c:
-        return "⚠️ Selecione uma sala."
+        return "Warning: Selecione uma sala."
     members = c.get("members", {}) or {}
 
     teacher_ids = members.get("teachers", [])
@@ -340,7 +355,8 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
 
     theme = c.get("theme_name") or c["name"]
     subs = subjects_by_class.get(cls_id, [])
-    subs_txt = ", ".join([s["name"] for s in subs if s.get("active", True)]) or "—"
+    subs_txt = ", ".join([s["name"]
+                         for s in subs if s.get("active", True)]) or "—"
     return (
         f"## {c['name']}\n"
         f"- **Tema da sala:** _{theme}_\n"
@@ -348,7 +364,6 @@ def _render_class_details(cls_id: Optional[str], classrooms, subjects_by_class):
         f"- 🎓 **Alunos:** {students}\n"
         f"- 🧩 **Subtemas disponíveis:** {subs_txt}\n"
     )
-
 
 
 def _student_subtheme_choices(cls_id: Optional[str], subjects_by_class: Dict[str, Sequence[Dict[str, Any]]]):
@@ -369,7 +384,7 @@ def student_setup_from_class(selected_id, classrooms, subjects_by_class, current
             gr.update(visible=True),
             gr.update(visible=False),
             current_adv or {},
-            "⚠️ Sala não encontrada.",
+            "Warning: Sala não encontrada.",
         )
 
     assunto = c.get("theme_name") or c.get("name") or ""
@@ -394,7 +409,7 @@ def student_setup_from_class(selected_id, classrooms, subjects_by_class, current
         gr.update(visible=True),
         gr.update(visible=False),
         new_adv,
-        "✅ Parâmetros da sala aplicados.",
+        "OK: Parâmetros da sala aplicados.",
     )
 
 
@@ -405,7 +420,7 @@ def student_rooms_refresh(auth, classrooms, subjects_by_class):
     info = (
         _render_class_details(default, classrooms, subjects_by_class or {})
         if default
-        else "⚠️ Você ainda não está em nenhuma sala."
+        else "Warning: Você ainda não está em nenhuma sala."
     )
     docs = _student_class_documents(classrooms, default)
     docs_md = _render_student_documents_md(default, classrooms)
@@ -446,9 +461,10 @@ def student_on_document_select(doc_id, documents_state):
         notice = _student_documents_notice(docs)
         return _student_reset_download_button(), gr.update(value=notice)
 
-    name = (doc.get("name") or doc.get("file_name") or "material").strip() or "material"
-    label = f"⬇️ Baixar {name}"
-    notice = f"ℹ️ Clique em baixar para receber **{name}**."
+    name = (doc.get("name") or doc.get("file_name")
+            or "material").strip() or "material"
+    label = f" Baixar {name}"
+    notice = f"Info: Clique em baixar para receber **{name}**."
     return (
         gr.update(visible=True, value=None, label=label, file_name=None),
         gr.update(value=notice),
@@ -460,12 +476,12 @@ def student_download_document(doc_id, cls_id, documents_state, auth):
 
     if not student_id:
         return _student_reset_download_button(), gr.update(
-            value="⚠️ Faça login novamente para baixar materiais."
+            value="Warning: Faça login novamente para baixar materiais."
         )
 
     if not doc_id:
         return _student_reset_download_button(), gr.update(
-            value="⚠️ Selecione um material válido."
+            value="Warning: Selecione um material válido."
         )
 
     try:
@@ -477,25 +493,25 @@ def student_download_document(doc_id, cls_id, documents_state, auth):
         )
     except SupabaseConfigurationError:
         return _student_reset_download_button(), gr.update(
-            value="⚠️ Configure o Supabase para validar materiais."
+            value="Warning: Configure o Supabase para validar materiais."
         )
     except SupabaseOperationError as err:
         message = str(err).strip() or "Erro ao localizar material."
-        if not message.startswith(("⚠️", "❌", "ℹ️")):
-            message = f"❌ {message}"
+        if not message.startswith(("Warning:", "ERROR:", "Info:")):
+            message = f"ERROR: {message}"
         return _student_reset_download_button(), gr.update(value=message)
 
     doc_classroom = doc.get("classroom_id")
     if doc_classroom and cls_id and str(doc_classroom) != str(cls_id):
         return _student_reset_download_button(), gr.update(
-            value="⚠️ Material não pertence à sala selecionada."
+            value="Warning: Material não pertence à sala selecionada."
         )
 
     bucket = doc.get("storage_bucket") or SUPABASE_CLASS_DOCS_BUCKET
     path = doc.get("storage_path")
     if not bucket or not path:
         return _student_reset_download_button(), gr.update(
-            value="⚠️ Material sem arquivo disponível para download."
+            value="Warning: Material sem arquivo disponível para download."
         )
 
     try:
@@ -507,14 +523,15 @@ def student_download_document(doc_id, cls_id, documents_state, auth):
         )
     except SupabaseConfigurationError:
         return _student_reset_download_button(), gr.update(
-            value="⚠️ Configure o Supabase Storage para baixar materiais."
+            value="Warning: Configure o Supabase Storage para baixar materiais."
         )
     except SupabaseOperationError as err:
         return _student_reset_download_button(), gr.update(
-            value=f"❌ Erro ao baixar material: {err}"
+            value=f"ERROR: Erro ao baixar material: {err}"
         )
 
-    name = (doc.get("name") or doc.get("file_name") or "material").strip() or "material"
+    name = (doc.get("name") or doc.get("file_name")
+            or "material").strip() or "material"
     ext = os.path.splitext(path)[1]
     if ext and not name.lower().endswith(ext.lower()):
         name = f"{name}{ext}"
@@ -523,10 +540,10 @@ def student_download_document(doc_id, cls_id, documents_state, auth):
         download_path = _student_store_download(file_bytes, name)
     except OSError as exc:
         return _student_reset_download_button(), gr.update(
-            value=f"❌ Não foi possível preparar o download: {exc}"
+            value=f"ERROR: Não foi possível preparar o download: {exc}"
         )
 
-    notice = f"✅ Download pronto: **{name}**."
+    notice = f"OK: Download pronto, clique novamente para baixar: **{name}**."
     return (
         gr.update(value=download_path, visible=True),
         gr.update(value=notice),
@@ -567,7 +584,8 @@ def _build_extras_from_classroom(theme, subthemes, interesses):
     if subs_txt:
         parts.append(f"Priorize os subtemas: {subs_txt}.")
     if intr_txt:
-        parts.append(f"Correlacione com temas de interesse do aluno: {intr_txt}.")
+        parts.append(
+            f"Correlacione com temas de interesse do aluno: {intr_txt}.")
     parts.append("Adote o tom motivador e pedagógico.")
     return " ".join(parts)
 
@@ -628,12 +646,14 @@ def student_end_chat(
     chat_history = history if isinstance(history, list) else []
     docs = docs_state if isinstance(docs_state, dict) else {}
     chats_map = chats_state if isinstance(chats_state, dict) else {}
-    active_chat_id = current_chat_id if isinstance(current_chat_id, str) else None
+    active_chat_id = current_chat_id if isinstance(
+        current_chat_id, str) else None
     storage_chat_id = active_chat_id or _mk_id("chat")
     pdf_path = None
     summary_text = ""
     classrooms_list = classrooms if isinstance(classrooms, list) else []
-    selected_theme_text = (selected_theme or "") if isinstance(selected_theme, str) else ""
+    selected_theme_text = (selected_theme or "") if isinstance(
+        selected_theme, str) else ""
     if selected_theme_text:
         selected_theme_text = selected_theme_text.strip()
     normalized_subjects: List[str] = []
@@ -642,8 +662,10 @@ def student_end_chat(
             if isinstance(item, str) and item.strip():
                 normalized_subjects.append(item.strip())
 
-    goal_text = str(student_goal).strip() if isinstance(student_goal, str) else ""
-    interest_text = str(student_interests).strip() if isinstance(student_interests, str) else ""
+    goal_text = str(student_goal).strip() if isinstance(
+        student_goal, str) else ""
+    interest_text = str(student_interests).strip(
+    ) if isinstance(student_interests, str) else ""
     normalized_goal_value = goal_text or "None"
     normalized_interest_value = interest_text or "None"
 
@@ -665,18 +687,20 @@ def student_end_chat(
 
     student_id = (auth_state or {}).get("user_id")
     if not student_id:
-        return _failure("⚠️ Não foi possível identificar o aluno logado.", warn=True)
+        return _failure("Warning: Não foi possível identificar o aluno logado.", warn=True)
 
     is_class_chat = bool(selected_class)
     if not is_class_chat and not selected_theme_text:
-        return _failure("⚠️ Informe um tema para registrar o chat independente.", warn=True)
+        return _failure("Warning: Informe um tema para registrar o chat independente.", warn=True)
 
-    owner_segment = _normalize_username((auth_state or {}).get("username")) or "anon"
+    owner_segment = _normalize_username(
+        (auth_state or {}).get("username")) or "anon"
     class_segment = _sanitize_storage_segment(selected_class) or "sem_sala"
     student_segment = _sanitize_storage_segment(student_id) or owner_segment
     prefix_segment = _sanitize_storage_segment(SUPABASE_CHAT_STORAGE_PREFIX)
     filename = f"{storage_chat_id}_{_now_ts()}.pdf"
-    path_parts = [segment for segment in (prefix_segment, class_segment, student_segment) if segment]
+    path_parts = [segment for segment in (
+        prefix_segment, class_segment, student_segment) if segment]
     storage_path = "/".join(path_parts + [filename])
 
     entry = chats_map.get(active_chat_id or storage_chat_id)
@@ -690,10 +714,13 @@ def student_end_chat(
 
     selected_classroom = _get_class_by_id(classrooms_list, selected_class)
     if selected_classroom and not classroom_theme:
-        classroom_theme = selected_classroom.get("theme_name") or selected_classroom.get("name")
+        classroom_theme = selected_classroom.get(
+            "theme_name") or selected_classroom.get("name")
 
-    topic_value = (classroom_theme or selected_theme_text or chat_title or "").strip()
-    subject_free_text_value = "NONE" if is_class_chat else (topic_value or "Adhoc")
+    topic_value = (
+        classroom_theme or selected_theme_text or chat_title or "").strip()
+    subject_free_text_value = "NONE" if is_class_chat else (
+        topic_value or "Adhoc")
     if not topic_value:
         topic_value = "Indefinido"
     if not subject_free_text_value:
@@ -701,7 +728,8 @@ def student_end_chat(
 
     if chat_history and VERTEX_CFG and not _vertex_err:
         try:
-            summary_text = summarize_chat_history(chat_history, VERTEX_CFG, max_phrases=2)
+            summary_text = summarize_chat_history(
+                chat_history, VERTEX_CFG, max_phrases=2)
         except Exception as exc:  # pragma: no cover - depende de chamadas externas
             summary_text = ""
             gr.Warning(f"Não foi possível gerar resumo do chat: {exc}")
@@ -826,7 +854,8 @@ def student_end_chat(
     entry["supabase_synced_at"] = ended_ts
 
     attachments = entry.setdefault("attachments", [])
-    attachments.append({"bucket": SUPABASE_CHAT_BUCKET, "path": stored_path, "type": "pdf"})
+    attachments.append({"bucket": SUPABASE_CHAT_BUCKET,
+                       "path": stored_path, "type": "pdf"})
 
     gr.Info("Chat encerrado! O PDF foi enviado e o registro foi salvo no Supabase.")
     supabase_chat_id = entry.get("supabase_chat_id")
@@ -850,7 +879,7 @@ def student_end_chat(
 
 def _render_progress_md(chats_map: Optional[Dict[str, Any]], user_filter: Optional[str] = None) -> str:
     if not chats_map:
-        return "⚠️ Nenhum chat registrado ainda."
+        return "Warning: Nenhum chat registrado ainda."
 
     normalized_filter = _normalize_username(user_filter)
     entries: List[Tuple[str, Dict[str, Any]]] = []
@@ -863,13 +892,15 @@ def _render_progress_md(chats_map: Optional[Dict[str, Any]], user_filter: Option
 
     if not entries:
         if user_filter:
-            return f"⚠️ Nenhum chat encontrado para o usuário `{user_filter}`."
-        return "⚠️ Nenhum chat registrado para o filtro aplicado."
+            return f"Warning: Nenhum chat encontrado para o usuário `{user_filter}`."
+        return "Warning: Nenhum chat registrado para o filtro aplicado."
 
-    entries.sort(key=lambda item: item[1].get("ended_at") or item[1].get("created_at") or 0, reverse=True)
+    entries.sort(key=lambda item: item[1].get(
+        "ended_at") or item[1].get("created_at") or 0, reverse=True)
     total = len(entries)
     scored = sum(1 for _, chat in entries if chat.get("score") is not None)
-    last_ts = entries[0][1].get("ended_at") or entries[0][1].get("created_at") or 0
+    last_ts = entries[0][1].get(
+        "ended_at") or entries[0][1].get("created_at") or 0
 
     lines = ["### Relatório de Progresso"]
     if user_filter:
@@ -889,18 +920,23 @@ def _render_progress_md(chats_map: Optional[Dict[str, Any]], user_filter: Option
 
     lines.append("\n#### Chats por sala")
     for class_id, items in sorted(by_class.items(), key=lambda kv: kv[0] or ""):
-        theme = items[0].get("classroom_theme") or items[0].get("topic_source") or "Indefinido"
-        lines.append(f"- `{class_id or 'fora_da_sala'}` — {theme}: {len(items)} chat(s)")
+        theme = items[0].get("classroom_theme") or items[0].get(
+            "topic_source") or "Indefinido"
+        lines.append(
+            f"- `{class_id or 'fora_da_sala'}` — {theme}: {len(items)} chat(s)")
 
     lines.append("\n#### Últimas conversas")
     for cid, chat in entries[:5]:
         owner = chat.get("owner") or chat.get("student_id") or "?"
         ended = chat.get("ended_at") or chat.get("created_at") or 0
-        ts_label = time.strftime("%d/%m %H:%M", time.localtime(ended)) if ended else "?"
+        ts_label = time.strftime(
+            "%d/%m %H:%M", time.localtime(ended)) if ended else "?"
         score = chat.get("score")
         score_txt = f" — nota: {score}" if score is not None else ""
-        subject = chat.get("topic_source") or chat.get("subject_free_text") or "Adhoc"
-        lines.append(f"- `{cid}` — {ts_label} — aluno: `{owner}` — tema: _{subject}_{score_txt}")
+        subject = chat.get("topic_source") or chat.get(
+            "subject_free_text") or "Adhoc"
+        lines.append(
+            f"- `{cid}` — {ts_label} — aluno: `{owner}` — tema: _{subject}_{score_txt}")
 
     return "\n".join(lines)
 
@@ -927,25 +963,33 @@ def build_student_views(
     with gr.Column(visible=False) as viewStudentRooms:
         gr.Markdown("## 🎒 Minhas Salas")
         with gr.Row():
-            stRoomSelect = gr.Dropdown(choices=[], label="Selecione uma sala", value=None)
-            stRoomsRefresh = gr.Button("🔄")
+            stRoomSelect = gr.Dropdown(
+                choices=[], label="Selecione uma sala", value=None)
+            stRoomsRefresh = gr.Button("Recarregar Dados")
         stRoomInfo = gr.Markdown("")
         with gr.Accordion("Materiais da Sala", open=False):
-            stDocsInfo = gr.Markdown("ℹ️ Selecione uma sala para visualizar os materiais.")
+            stDocsInfo = gr.Markdown(
+                "Info: Selecione uma sala para visualizar os materiais.")
             with gr.Row():
-                stDocsSelect = gr.Dropdown(choices=[], label="Materiais", value=None)
+                stDocsSelect = gr.Dropdown(
+                    choices=["Carregando..."], label="Materiais", value=None)
                 stDocsDownload = gr.DownloadButton(
-                    "⬇️ Baixar material", visible=False, variant="secondary"
+                    " Baixar material", visible=False, variant="secondary"
                 )
-            stDocsNotice = gr.Markdown("ℹ️ Nenhum material disponível para esta sala.")
+            stDocsNotice = gr.Markdown(
+                "Info: Nenhum material disponível para esta sala.")
         with gr.Row():
-            stEnterRoomChatSetup = gr.Button("💬 Entrar no chat da sala", variant="primary")
+            stEnterRoomChatSetup = gr.Button(
+                "💬 Entrar no chat da sala", variant="primary")
             stRoomsBack = gr.Button("← Voltar à Home")
         with gr.Accordion("Histórico de Chats", open=False):
             with gr.Row():
-                stHistoryClass = gr.Dropdown(choices=[], label="Sala", value=None)
-                stHistoryRefresh = gr.Button("🔄 Atualizar histórico")
-            stHistoryInfo = gr.Markdown("Selecione uma sala ou atualize para ver seus chats.")
+                stHistoryClass = gr.Dropdown(
+                    choices=[], label="Sala", value=None)
+                stHistoryRefresh = gr.Button(
+                    "Recarregar Dados Atualizar histórico")
+            stHistoryInfo = gr.Markdown(
+                "Selecione uma sala ou atualize para ver seus chats.")
             stHistoryTable = gr.Dataframe(
                 headers=list(HISTORY_TABLE_HEADERS),
                 datatype=["str"] * 6,
@@ -953,25 +997,26 @@ def build_student_views(
                 wrap=True,
             )
             with gr.Row():
-                stHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
+                stHistoryChat = gr.Dropdown(
+                    choices=[], label="Chat registrado", value=None)
                 stHistoryLoad = gr.Button("📄 Ver detalhes")
             stHistoryMetadata = gr.Markdown(
-                "ℹ️ Selecione um chat para visualizar os detalhes.",
+                "Info: Selecione um chat para visualizar os detalhes.",
                 elem_classes=["history-box"],
             )
             gr.Markdown("#### Resumo da IA")
             stHistorySummary = gr.Markdown(
-                "ℹ️ Selecione um chat para visualizar o resumo.",
+                "Info: Selecione um chat para visualizar o resumo.",
                 elem_classes=["history-box"],
             )
             gr.Markdown("#### Prévia do PDF")
             stHistoryPreview = gr.Markdown(
-                "ℹ️ Carregue um chat para visualizar a prévia.",
+                "Info: Carregue um chat para visualizar a prévia.",
                 elem_classes=["history-box"],
             )
             with gr.Row():
                 stHistoryDownload = gr.DownloadButton(
-                    "⬇️ Baixar PDF", visible=False, variant="secondary"
+                    " Baixar PDF", visible=False, variant="secondary"
                 )
             stHistoryEvaluation = gr.Textbox(
                 label="Avaliação automática (professores)",
@@ -980,7 +1025,7 @@ def build_student_views(
                 value="",
             )
             stHistoryComments = gr.Markdown(
-                "ℹ️ Nenhum comentário registrado ainda.",
+                "Info: Nenhum comentário registrado ainda.",
                 elem_classes=["history-box"],
             )
             stHistoryNotice = gr.Markdown("")
@@ -991,9 +1036,11 @@ def build_student_views(
             stSetupBackRooms = gr.Button("← Voltar às minhas salas")
         with gr.Row():
             with gr.Column(scale=1) as stCfgCol:
-                stAssunto = gr.Textbox(label="1) Assunto (tema da sala)", interactive=False)
+                stAssunto = gr.Textbox(
+                    label="1) Assunto (tema da sala)", interactive=False)
                 stSubthemes = gr.CheckboxGroup(choices=[], label="2) Subtemas")
-                stEstilo = gr.Radio(choices=["técnicas", "simples"], value="simples", label="3) Estilo de linguagem")
+                stEstilo = gr.Radio(
+                    choices=["técnicas", "simples"], value="simples", label="3) Estilo de linguagem")
                 stDetalhamento = gr.Radio(
                     choices=["detalhadas", "curtas"], value="detalhadas", label="4) Nível de detalhamento"
                 )
@@ -1005,15 +1052,20 @@ def build_student_views(
                     label="6) Temas de interesse",
                     placeholder="Ex: futebol, games, música",
                 )
-                gr.Markdown("_Correlacione com um assunto que você conhece para aprender melhor!_")
-                stSubmit = gr.Button("Aplicar Configuração da Sala", variant="primary", interactive=True)
+                gr.Markdown(
+                    "_Correlacione com um assunto que você conhece para aprender melhor!_")
+                stSubmit = gr.Button(
+                    "Aplicar Configuração da Sala", variant="primary", interactive=True)
             with gr.Column(scale=2, visible=False) as stChatCol:
-                stProvider = gr.Markdown("**Chat da Sala** — usa seu tema, subtemas e interesses.")
-                stChatbot = gr.Chatbot(label="Chat (Sala)", type="messages", height=420)
+                stProvider = gr.Markdown(
+                    "**Chat da Sala** — usa seu tema, subtemas e interesses.")
+                stChatbot = gr.Chatbot(
+                    label="Chat (Sala)", type="messages", height=420)
                 with gr.Row():
                     stClear = gr.Button("Limpar chat")
                 with gr.Row():
-                    stBackToSetup = gr.Button("⬅️ Voltar para configuração da sala")
+                    stBackToSetup = gr.Button(
+                        "⬅️ Voltar para configuração da sala")
                     stEndChat = gr.Button("Encerrar Chat", variant="stop")
                 allow_file_upload = bool(VERTEX_CFG and not _vertex_err)
                 chat_placeholder = (
@@ -1071,7 +1123,8 @@ def build_student_views(
 
     stDocsDownload.click(
         student_download_document,
-        inputs=[stDocsSelect, student_selected_class, student_documents_state, auth_state],
+        inputs=[stDocsSelect, student_selected_class,
+                student_documents_state, auth_state],
         outputs=[stDocsDownload, stDocsNotice],
     )
 
@@ -1094,7 +1147,8 @@ def build_student_views(
 
     setup_evt.then(
         student_go_setup,
-        inputs=[auth_state, student_selected_class, classrooms_state, subjects_state],
+        inputs=[auth_state, student_selected_class,
+                classrooms_state, subjects_state],
         outputs=[viewStudentRooms, viewStudentSetup, stAssunto, stSubthemes],
     )
 
@@ -1115,11 +1169,14 @@ def build_student_views(
 
     stChatInput.submit(
         addMessage,
-        inputs=[stChatbot, stChatInput, docs_state, auth_state, current_chat_id, chats_state],
-        outputs=[stChatbot, stChatInput, docs_state, current_chat_id, chats_state],
+        inputs=[stChatbot, stChatInput, docs_state,
+                auth_state, current_chat_id, chats_state],
+        outputs=[stChatbot, stChatInput, docs_state,
+                 current_chat_id, chats_state],
     ).then(
         bot,
-        inputs=[stChatbot, docs_state, script_state, adv_state, current_chat_id, chats_state],
+        inputs=[stChatbot, docs_state, script_state,
+                adv_state, current_chat_id, chats_state],
         outputs=stChatbot,
     ).then(_student_chat_enable, outputs=stChatInput)
 
@@ -1179,7 +1236,8 @@ def build_student_views(
         ],
     ).then(
         student_history_load_chat,
-        inputs=[student_history_selected, student_history_state, student_download_path],
+        inputs=[student_history_selected,
+                student_history_state, student_download_path],
         outputs=[
             student_history_selected,
             stHistoryMetadata,
@@ -1194,7 +1252,8 @@ def build_student_views(
         ],
     )
 
-    stBackToSetup.click(_student_chat_back_to_setup, outputs=[stCfgCol, stChatCol])
+    stBackToSetup.click(_student_chat_back_to_setup,
+                        outputs=[stCfgCol, stChatCol])
     stSetupBackRooms.click(
         lambda: (gr.update(visible=False), gr.update(visible=True)),
         inputs=None,
@@ -1213,7 +1272,8 @@ def build_student_views(
         ],
     ).then(
         student_history_load_chat,
-        inputs=[student_history_selected, student_history_state, student_download_path],
+        inputs=[student_history_selected,
+                student_history_state, student_download_path],
         outputs=[
             student_history_selected,
             stHistoryMetadata,
@@ -1240,7 +1300,8 @@ def build_student_views(
         ],
     ).then(
         student_history_load_chat,
-        inputs=[student_history_selected, student_history_state, student_download_path],
+        inputs=[student_history_selected,
+                student_history_state, student_download_path],
         outputs=[
             student_history_selected,
             stHistoryMetadata,

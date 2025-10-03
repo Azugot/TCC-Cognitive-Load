@@ -61,7 +61,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         header_msg += f"\n\n> **Atenção**: {vertex_err}"
     else:
         header_msg += (
-            f"\n\n> ✅ Credenciais Vertex carregadas de: `{(vertex_cfg or {}).get('source_path', '?')}`"
+            f"\n\n> OK: Credenciais Vertex carregadas de: `{(vertex_cfg or {}).get('source_path', '?')}`"
             f" | Projeto: `{(vertex_cfg or {}).get('project', '?')}` | Região: `{(vertex_cfg or {}).get('location', '?')}`"
             f" | Modelo: `{(vertex_cfg or {}).get('model', '?')}`"
         )
@@ -220,10 +220,10 @@ def doRegister(username, password, confirm_password, email, full_name, role, aut
     confirm_pw = (confirm_password or "").strip()
     print(f"[AUTH] doRegister: username='{raw_username.lower()}' email='{login_email}' role='{role}'")
     if not raw_username or not login_email or not name or not pw or not confirm_pw:
-        return gr.update(value="⚠️ Informe usuário, e-mail, nome, senha e confirmação."), authState
+        return gr.update(value="Warning: Informe usuário, e-mail, nome, senha e confirmação."), authState
 
     if pw != confirm_pw:
-        return gr.update(value="⚠️ As senhas informadas não coincidem."), authState
+        return gr.update(value="Warning: As senhas informadas não coincidem."), authState
 
     role_pt = (role or "aluno").strip().lower() or "aluno"
     supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
@@ -244,27 +244,27 @@ def doRegister(username, password, confirm_password, email, full_name, role, aut
         )
         print(f"[AUTH] doRegister: Supabase created -> {created}")
     except SupabaseConfigurationError:
-        warn = "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de registrar usuários."
+        warn = "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY antes de registrar usuários."
         print("[AUTH] doRegister: configuração Supabase ausente")
         return gr.update(value=warn), authState
     except SupabaseUserExistsError:
         print(f"[AUTH] doRegister: usuário já existe -> {login_email}")
-        return gr.update(value="⚠️ Usuário já cadastrado."), authState
+        return gr.update(value="Warning: Usuário já cadastrado."), authState
     except SupabaseOperationError as err:
         print(f"[AUTH] doRegister: erro Supabase -> {err}")
-        return gr.update(value=f"❌ Erro ao registrar: {err}"), authState
+        return gr.update(value=f"ERROR: Erro ao registrar: {err}"), authState
     except Exception as exc:
         print(f"[AUTH] doRegister: erro inesperado -> {exc}")
-        return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
+        return gr.update(value=f"ERROR: Erro inesperado: {exc}"), authState
 
-    return gr.update(value="✅ Usuário registrado! Faça login com suas credenciais."), authState
+    return gr.update(value="OK: Usuário registrado! Faça login com suas credenciais."), authState
 
 
 def doLogin(username, password, authState):
     uname = (username or "").strip().lower()
     pw = (password or "").strip()
     if not uname or not pw:
-        return gr.update(value="⚠️ Informe usuário e senha."), authState
+        return gr.update(value="Warning: Informe usuário e senha."), authState
 
     try:
         entry = fetch_user_record(
@@ -274,23 +274,23 @@ def doLogin(username, password, authState):
             uname,
         )
     except SupabaseConfigurationError:
-        warn = "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para efetuar login."
+        warn = "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para efetuar login."
         return gr.update(value=warn), authState
     except SupabaseOperationError as err:
         print(f"[AUTH] doLogin: erro Supabase -> {err}")
-        return gr.update(value=f"❌ Erro ao fazer login: {err}"), authState
+        return gr.update(value=f"ERROR: Erro ao fazer login: {err}"), authState
     except Exception as exc:
         print(f"[AUTH] doLogin: erro inesperado -> {exc}")
-        return gr.update(value=f"❌ Erro inesperado: {exc}"), authState
+        return gr.update(value=f"ERROR: Erro inesperado: {exc}"), authState
 
     if not entry:
         print(f"[AUTH] doLogin: usuário não encontrado -> {uname}")
-        return gr.update(value="❌ Usuário ou senha incorretos."), authState
+        return gr.update(value="ERROR: Usuário ou senha incorretos."), authState
 
     expected_hash = entry.password_hash or ""
     if expected_hash != _hashPw(pw):
         print(f"[AUTH] doLogin: senha incorreta -> {uname}")
-        return gr.update(value="❌ Usuário ou senha incorretos."), authState
+        return gr.update(value="ERROR: Usuário ou senha incorretos."), authState
 
     mapped_role = ROLE_DB_TO_PT.get((entry.role or "student").strip().lower(), "aluno")
     stored_username = (entry.username or uname or "").strip() or uname
@@ -307,7 +307,7 @@ def doLogin(username, password, authState):
     print(f"[AUTH] doLogin: sucesso -> {authState}")
     return (
         gr.update(
-            value=f"✅ Bem-vindo, **{display_name}** (usuário: {stored_username} · perfil: {mapped_role})."
+            value=f"OK: Bem-vindo, **{display_name}** (usuário: {stored_username} · perfil: {mapped_role})."
         ),
         authState,
     )
@@ -340,7 +340,7 @@ def _doLogout():
 def listStudents(auth):
     role = (auth or {}).get("role", "aluno")
     if str(role).lower() not in ("professor", "admin"):
-        return "⚠️ Apenas professores/admin podem visualizar a lista de alunos."
+        return "Warning: Apenas professores/admin podem visualizar a lista de alunos."
     try:
         records = fetch_users_by_role(
             SUPABASE_URL,
@@ -349,13 +349,13 @@ def listStudents(auth):
             ROLE_PT_TO_DB.get("aluno", "student"),
         )
     except SupabaseConfigurationError:
-        return "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para visualizar os alunos."
+        return "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para visualizar os alunos."
     except SupabaseOperationError as err:
         print(f"[AUTH] listStudents: erro Supabase -> {err}")
-        return f"❌ Erro ao consultar alunos: {err}"
+        return f"ERROR: Erro ao consultar alunos: {err}"
     except Exception as exc:
         print(f"[AUTH] listStudents: erro inesperado -> {exc}")
-        return f"❌ Erro inesperado ao consultar alunos: {exc}"
+        return f"ERROR: Erro inesperado ao consultar alunos: {exc}"
 
     students = []
     for record in records:

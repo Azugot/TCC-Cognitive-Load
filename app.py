@@ -69,11 +69,11 @@ def _logout_cleanup():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
-        gr.update(value="ℹ️ Selecione uma sala para visualizar os materiais."),
+        gr.update(value="Info: Selecione uma sala para visualizar os materiais."),
         gr.update(choices=[], value=None),
         [],
-        gr.update(visible=False, value=None, label="⬇️ Baixar material", file_name=None),
-        gr.update(value="ℹ️ Nenhum material disponível para esta sala."),
+        gr.update(visible=False, value=None, label="Baixar material", file_name=None),
+        gr.update(value="Info: Nenhum material disponível para esta sala."),
     )
 
 
@@ -351,8 +351,8 @@ def build_app() -> gr.Blocks:
 
 def launch():
     app = build_app()
-    app.launch()
+    app.launch(debug=True)
 
 
 if __name__ == "__main__":
-    launch()
+        launch()
