@@ -499,11 +499,21 @@ def teacher_save_params(
     return classes, subjects_map, msg
 
 
-def _teacher_classrooms_outputs(auth, classrooms, notice=""):
+def _teacher_classrooms_outputs(auth, classrooms, notice="", current_value=None):
     relevant = _teacher_classes(auth, classrooms or [])
     md = _render_classrooms_md(relevant)
     md = _merge_notice(md, notice)
-    dd = gr.update(choices=_teacher_choices(auth, classrooms or []))
+    choices = [
+        (c.get("name") or c.get("id") or "Sala", c.get("id"))
+        for c in relevant
+        if c.get("id")
+    ]
+    valid_ids = [value for _, value in choices]
+    if current_value in valid_ids:
+        value = current_value
+    else:
+        value = valid_ids[0] if valid_ids else None
+    dd = gr.update(choices=choices, value=value)
     return md, dd
 
 
@@ -574,25 +584,54 @@ def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
     return classes, subjects_map, md
 
 
-def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth):
+def teacher_add_classroom(
+    name,
+    theme,
+    desc,
+    locked,
+    classrooms,
+    subjects,
+    auth,
+    current_selection=None,
+):
     name = (name or "").strip()
     theme = (theme or "").strip() or name
     me_id = _auth_user_id(auth)
     role = _user_role(auth)
 
     if role not in ("professor", "admin"):
-        md, dd = _teacher_classrooms_outputs(auth, classrooms, "⛔ Apenas professores ou admins podem criar salas.")
+        md, dd = _teacher_classrooms_outputs(
+            auth,
+            classrooms,
+            "⛔ Apenas professores ou admins podem criar salas.",
+            current_value=current_selection,
+        )
         return classrooms, subjects, md, dd, dd, "⛔ Apenas professores ou admins podem criar salas."
     if not me_id and not _is_admin(auth):
-        md, dd = _teacher_classrooms_outputs(auth, classrooms, "Warning: Faça login.")
+        md, dd = _teacher_classrooms_outputs(
+            auth,
+            classrooms,
+            "Warning: Faça login.",
+            current_value=current_selection,
+        )
         return classrooms, subjects, md, dd, dd, "Warning: Faça login."
     if not name:
-        md, dd = _teacher_classrooms_outputs(auth, classrooms, "Warning: Informe um nome para a sala.")
+        md, dd = _teacher_classrooms_outputs(
+            auth,
+            classrooms,
+            "Warning: Informe um nome para a sala.",
+            current_value=current_selection,
+        )
         return classrooms, subjects, md, dd, dd, "Warning: Informe um nome para a sala."
 
     creator_id = _auth_user_id(auth)
     if not creator_id and not _is_admin(auth):
-        md, dd = _teacher_classrooms_outputs(auth, classrooms, "Warning: Não foi possível identificar o usuário logado.")
+        md, dd = _teacher_classrooms_outputs(
+            auth,
+            classrooms,
+            "Warning: Não foi possível identificar o usuário logado.",
+            current_value=current_selection,
+        )
         return classrooms, subjects, md, dd, dd, "Warning: Não foi possível identificar o usuário logado."
 
     description = (desc or "").strip() or ""
@@ -611,6 +650,7 @@ def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth)
             auth,
             classrooms,
             "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
+            current_value=current_selection,
         )
         return (
             classrooms,
@@ -621,7 +661,12 @@ def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth)
             "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para cadastrar salas.",
         )
     except SupabaseOperationError as err:
-        md, dd = _teacher_classrooms_outputs(auth, classrooms, f"ERROR: Erro ao criar sala: {err}")
+        md, dd = _teacher_classrooms_outputs(
+            auth,
+            classrooms,
+            f"ERROR: Erro ao criar sala: {err}",
+            current_value=current_selection,
+        )
         return classrooms, subjects, md, dd, dd, f"ERROR: Erro ao criar sala: {err}"
 
     classroom_id = (created or {}).get("id")
@@ -640,14 +685,25 @@ def teacher_add_classroom(name, theme, desc, locked, classrooms, subjects, auth)
             print(f"[SUPABASE] Falha ao definir professor responsável: {err}")
 
     classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-    md, dd = _teacher_classrooms_outputs(auth, classes, notice)
+    selected_cls = classroom_id or current_selection
+    md, dd = _teacher_classrooms_outputs(
+        auth,
+        classes,
+        notice,
+        current_value=selected_cls,
+    )
     message = notice or "OK: Sala criada."
     return classes, subjects_map, md, dd, dd, message
 
 
-def teacher_refresh(auth, classrooms, subjects):
+def teacher_refresh(auth, classrooms, subjects, current_selection=None):
     classes, subjects_map, notice = _refresh_states(classrooms, subjects)
-    md, dd = _teacher_classrooms_outputs(auth, classes, notice)
+    md, dd = _teacher_classrooms_outputs(
+        auth,
+        classes,
+        notice,
+        current_value=current_selection,
+    )
     return classes, subjects_map, md, dd
 
 
@@ -1305,7 +1361,9 @@ def build_teacher_view(
                 btnTeacherAddClass = gr.Button("➕ Criar sala", variant="primary")
         with gr.Accordion("Selecionar sala", open=False):
             with gr.Row():
-                tSelectClass = gr.Dropdown(choices=[], label="Minhas salas", value=None)
+                tSelectClass = gr.Dropdown(
+                    choices=[], label="Minhas salas", value=None, allow_custom_value=True
+                )
                 btnTeacherRefresh = gr.Button("Recarregar Dados")
         with gr.Accordion("Membros (Professores/Alunos)", open=False):
             with gr.Row():
@@ -1337,7 +1395,7 @@ def build_teacher_view(
                 )
                 tDocsLastUpload = gr.File(label="Último upload", interactive=False)
             tDocsSelect = gr.Dropdown(
-                choices=[], label="Materiais cadastrados", value=None
+                choices=[], label="Materiais cadastrados", value=None, allow_custom_value=True
             )
             with gr.Row():
                 tDocsRename = gr.Textbox(
@@ -1367,7 +1425,9 @@ def build_teacher_view(
             tParamsMsg = gr.Markdown("")
         with gr.Accordion("Histórico de Chats", open=False):
             with gr.Row():
-                tHistoryClass = gr.Dropdown(choices=[], label="Sala", value=None)
+                tHistoryClass = gr.Dropdown(
+                    choices=[], label="Sala", value=None, allow_custom_value=True
+                )
                 tHistoryRefresh = gr.Button("Recarregar Dados Atualizar histórico")
             tHistoryInfo = gr.Markdown("Selecione uma sala para listar os chats.")
             tHistoryTable = gr.Dataframe(
@@ -1377,7 +1437,9 @@ def build_teacher_view(
                 wrap=True,
             )
             with gr.Row():
-                tHistoryChat = gr.Dropdown(choices=[], label="Chat registrado", value=None)
+                tHistoryChat = gr.Dropdown(
+                    choices=[], label="Chat registrado", value=None, allow_custom_value=True
+                )
                 tHistoryLoad = gr.Button("📄 Ver detalhes")
             tHistoryMetadata = gr.Markdown(
                 "Info: Selecione um chat para visualizar os detalhes.",
@@ -1472,6 +1534,7 @@ def build_teacher_view(
             classrooms_state,
             subjects_state,
             auth_state,
+            tSelectClass,
         ],
         outputs=[classrooms_state, subjects_state, tClassroomsMd, tSelectClass, tSelectClass, teacherNotice],
     ).then(
@@ -1496,7 +1559,7 @@ def build_teacher_view(
 
     btnTeacherRefresh.click(
         teacher_refresh,
-        inputs=[auth_state, classrooms_state, subjects_state],
+        inputs=[auth_state, classrooms_state, subjects_state, tSelectClass],
         outputs=[classrooms_state, subjects_state, tClassroomsMd, tSelectClass],
     ).then(
         _teacher_on_select,

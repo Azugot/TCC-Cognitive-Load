@@ -964,7 +964,7 @@ def build_student_views(
         gr.Markdown("## 🎒 Minhas Salas")
         with gr.Row():
             stRoomSelect = gr.Dropdown(
-                choices=[], label="Selecione uma sala", value=None)
+                choices=[], label="Selecione uma sala", value=None, allow_custom_value=True)
             stRoomsRefresh = gr.Button("Recarregar Dados")
         stRoomInfo = gr.Markdown("")
         with gr.Accordion("Materiais da Sala", open=False):
@@ -972,7 +972,11 @@ def build_student_views(
                 "Info: Selecione uma sala para visualizar os materiais.")
             with gr.Row():
                 stDocsSelect = gr.Dropdown(
-                    choices=["Carregando..."], label="Materiais", value=None)
+                    choices=["Carregando..."],
+                    label="Materiais",
+                    value=None,
+                    allow_custom_value=True,
+                )
                 stDocsDownload = gr.DownloadButton(
                     " Baixar material", visible=False, variant="secondary"
                 )
@@ -985,7 +989,7 @@ def build_student_views(
         with gr.Accordion("Histórico de Chats", open=False):
             with gr.Row():
                 stHistoryClass = gr.Dropdown(
-                    choices=[], label="Sala", value=None)
+                    choices=[], label="Sala", value=None, allow_custom_value=True)
                 stHistoryRefresh = gr.Button(
                     "Recarregar Dados Atualizar histórico")
             stHistoryInfo = gr.Markdown(
@@ -998,7 +1002,7 @@ def build_student_views(
             )
             with gr.Row():
                 stHistoryChat = gr.Dropdown(
-                    choices=[], label="Chat registrado", value=None)
+                    choices=[], label="Chat registrado", value=None, allow_custom_value=True)
                 stHistoryLoad = gr.Button("📄 Ver detalhes")
             stHistoryMetadata = gr.Markdown(
                 "Info: Selecione um chat para visualizar os detalhes.",
