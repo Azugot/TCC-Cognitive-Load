@@ -543,18 +543,18 @@ def fetch_latest_auto_evaluations(
         if not chat_id or chat_id in results:
             continue
         payload = _ensure_dict(row.get("bot_evaluation"))
-        text_value = payload.get("text") or payload.get("evaluation") or payload.get("content")
-        if isinstance(text_value, dict):
-            text_value = json.dumps(text_value, ensure_ascii=False)
-        text_str = str(text_value).strip() if text_value is not None else ""
-        score_value = payload.get("score") or payload.get("rating")
+        overall_evaluation = payload.get("overview") or payload.get("evaluation") or payload.get("content")
+        subjects_list = payload.get("subjects")
+        clean_overall_evaluation = str(overall_evaluation).strip() if overall_evaluation is not None else ""
+        overall_score = payload.get("score")
         try:
-            score = float(score_value) if score_value is not None else None
+            score = float(overall_score) if overall_score is not None else None
         except (TypeError, ValueError):
             score = None
         results[chat_id] = {
             "id": row.get("id"),
-            "text": text_str,
+            "subjects": subjects_list,
+            "overview": clean_overall_evaluation,
             "score": score,
             "created_at": row.get("created_at"),
             "raw": payload,
