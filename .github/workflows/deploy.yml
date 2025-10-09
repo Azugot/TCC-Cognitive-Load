@@ -16,5 +16,5 @@ jobs:
           lfs: true
       - name: Push to hub
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://Azugot:$HF_ACTIONTOKEN@huggingface.co/spaces/Azugot/TCCAugusto main
+          HF_TOKEN: ${{ secrets.HF_ACTIONTOKEN }}
+        run: git push https://Azugot:$HF_TOKEN@huggingface.co/spaces/Azugot/TCCAugusto main
