@@ -99,6 +99,62 @@ def _comments_markdown(comments: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _build_evaluation_display_text(
+    score: Optional[float],
+    overview: str,
+    subjects: List[Dict[str, Any]],
+) -> str:
+    """Create the markdown text shown for an automatic evaluation."""
+
+    lines: List[str] = []
+
+    # Header with overall grade (if available)
+    try:
+        if score is not None:
+            lines.append(f"Nota automática: {float(score):.1f}")
+    except (TypeError, ValueError):
+        if score not in (None, ""):
+            lines.append(f"Nota automática: {score}")
+
+    # Overview text
+    overview_text = (overview or "").strip()
+    if overview_text:
+        if lines:
+            lines.append("")
+        lines.append("**Resumo geral**")
+        lines.append(overview_text)
+
+    # Detailed subjects list
+    if subjects:
+        if lines:
+            lines.append("")
+        lines.append("**Avaliação por assunto**")
+        for subj in subjects:
+            title = (subj.get("subject") or "Assunto").strip()
+            grade = subj.get("grade")
+            comment = (subj.get("comment") or "").strip()
+
+            grade_text = ""
+            try:
+                if grade is not None:
+                    g = float(grade)
+                    g = max(0.0, min(100.0, g))
+                    grade_text = f"{g:.1f}"
+            except (TypeError, ValueError):
+                grade_text = str(grade) if grade not in (None, "") else ""
+
+            if grade_text and comment:
+                lines.append(f"- **{title}** — {grade_text}: {comment}")
+            elif grade_text:
+                lines.append(f"- **{title}** — {grade_text}")
+            elif comment:
+                lines.append(f"- **{title}** — {comment}")
+            else:
+                lines.append(f"- **{title}**")
+
+    return "\n".join(lines).strip()
+
+
 _SPEAKER_PATTERN = re.compile(
     r"^\s*([\wÀ-ÖØ-öø-ÿ]+(?:\s+[\wÀ-ÖØ-öø-ÿ]+)*)\s*:\s*")
 
@@ -454,6 +510,9 @@ def generate_auto_evaluation(
     except (TypeError, ValueError):
         overall_grade = None
 
+    # Prepare display text with all evaluation details
+    display_text = _build_evaluation_display_text(overall_grade, overview, subjects)
+
     # Extra payload persisted alongside the evaluation
     extra_payload = {
         "overview": overview,
@@ -470,11 +529,11 @@ def generate_auto_evaluation(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             chat_id=chat_id,
-            evaluation_text=overview,           # store overview as main text
+            evaluation_text=display_text,        # store full display text
             evaluation_score=overall_grade,     # store overall grade as score
             extra_payload=extra_payload,
         )
-        stored_text = persisted_entry.get("text") or overview
+        stored_text = persisted_entry.get("text") or display_text
         stored_score = persisted_entry.get("score", overall_grade)
         stored_at = persisted_entry.get("created_at")
         notice = (
@@ -483,12 +542,12 @@ def generate_auto_evaluation(
             else "OK: Avaliação automática registrada."
         )
     except SupabaseConfigurationError:
-        stored_text = overview
+        stored_text = display_text
         stored_score = overall_grade
         stored_at = None
         notice = "Warning: Configure o Supabase para salvar a avaliação automaticamente."
     except SupabaseOperationError as err:
-        stored_text = overview
+        stored_text = display_text
         stored_score = overall_grade
         stored_at = None
         notice = f"ERROR: Avaliação não salva no Supabase: {err}"
@@ -499,62 +558,22 @@ def generate_auto_evaluation(
     else:
         chat["auto_evaluation_updated_at"] = datetime.utcnow().isoformat() + "Z"
 
-    # overview (legacy key)
+    # Evaluation text (legacy key name kept for compatibility)
     chat["auto_evaluation"] = stored_text
     # overall grade (legacy key)
     chat["auto_evaluation_score"] = stored_score
-    chat["auto_evaluation_overview"] = stored_text           # explicit
+    chat["auto_evaluation_overview"] = overview              # explicit overview only
     chat["auto_evaluation_overall_grade"] = stored_score     # explicit
     chat["auto_evaluation_subjects"] = subjects              # full subject list
 
     metadata = _chat_metadata_md(chat)
 
-    # Build user-facing display text:
-    lines = []
-    final_score = stored_score
-
-    # Header with overall grade (if any)
-    try:
-        if final_score is not None:
-            lines.append(f"Nota automática: {float(final_score):.1f}")
-    except (TypeError, ValueError):
-        if final_score not in (None, ""):
-            lines.append(f"Nota automática: {final_score}")
-
-    # Overview
-    if stored_text:
-        lines.append("")
-        lines.append("**Resumo geral**")
-        lines.append(stored_text.strip())
-
-    # Subjects (each: title, grade, comment)
-    if subjects:
-        lines.append("")
-        lines.append("**Avaliação por assunto**")
-        for subj in subjects:
-            title = (subj.get("subject") or "Assunto").strip()
-            grade = subj.get("grade")
-            comment = (subj.get("comment") or "").strip()
-
-            grade_txt = ""
-            try:
-                if grade is not None:
-                    g = float(grade)
-                    g = max(0.0, min(100.0, g))
-                    grade_txt = f"{g:.1f}"
-            except (TypeError, ValueError):
-                grade_txt = str(grade) if grade not in (None, "") else ""
-
-            if grade_txt and comment:
-                lines.append(f"- **{title}** — {grade_txt}: {comment}")
-            elif grade_txt:
-                lines.append(f"- **{title}** — {grade_txt}")
-            elif comment:
-                lines.append(f"- **{title}** — {comment}")
-            else:
-                lines.append(f"- **{title}**")
-
-    display_text = "\n".join(lines).strip() or stored_text or ""
+    final_score = stored_score if stored_score is not None else overall_grade
+    display_text = (
+        stored_text.strip()
+        if stored_text and stored_text.strip()
+        else _build_evaluation_display_text(final_score, overview, subjects)
+    )
 
     return display_text, entries, metadata, notice
 
