@@ -230,79 +230,98 @@ def generate_chat_evaluation(
 
     model = _vertex_init_or_raise(cfg)
     prompt = (
-        "You are an experienced teacher evaluating a tutoring session. "
-        "Analyze the conversation transcript and provide a concise assessment of the student's "
-        "progress on the subjects: "
-        f"{subject_text}. Describe what they are doing well and where they struggle. "
-        "Respond strictly as JSON with two fields: \n"
-        "{\n  \"score\": <number between 0 and 100>,\n  \"text\": \"<detailed feedback>\"\n}.\n"
+        f"""You are an intelligent educational evaluator.
+			
+			You will receive:
+			- An ordered list of subjects covered in the chat.
+			- A full transcript of the student's interactions, including chat messages and responses to learning activities.
+			
+			Your task is to analyze this content and assign a score from 0 to 100 for each topic, reflecting the student's current level of mastery.
+			You should also write a small comment for each topic, explaining the score you assigned.
+            Analyze the conversation transcript and provide a concise assessment of the student's progress on the subjects: {subject_text}. 
+            Describe what they are doing well and where they struggle on the subjects studied, ignore any unused subject in scoring and detailing.
+            The overall score should only take into account the studied subjects.
+			
+            Return the scores in the same order as the subjects.
+			
+			Scoring criteria:
+			- 0: The student has shown no interaction or understanding of the topic.
+			- 10: The student has engaged minimally, with superficial or incorrect answers.
+			- 30: The student has shown partial understanding, with some correct answers and relevant questions.
+			- 50: The student demonstrates a reasonable understanding, with consistent interaction and mostly correct answers.
+			- 75: The student shows solid mastery, makes insightful contributions, and answers accurately.
+			- 100: The student shows full mastery of the topic, with deep understanding, confident reasoning, and high accuracy in answers.
+			- You can assign any value between 0 and 100, not just the ones listed above.
+			- Be conservative in your scoring. The closer the score is to 100, the harder it should be to achieve.
+			"""
+        "Respond strictly as JSON with the following fields: {\n  \"subjects\": [\n    {\n      \"subject\": \"<Subject title>\",\n      \"grade\": \"<number between 0 and 100>\",\n      \"comment\": \"<detailed feedback>\"\n    }\n  ],\n  \"overview\": \"<detailed overview of the entire conversation>\",\n  \"overallGrade\": \"<number between 0 and 100>\"\n}"
         "Do not add any additional commentary outside the JSON.\n\n"
         "Conversation transcript:\n"
         f"{transcript}"
+        "Always answer in Brazilian Portuguese(PT-BR)"
     )
 
     generation_config = {
-        "temperature": 0.3,
+        "temperature": 0.1,
         "top_p": 0.9,
-        "max_output_tokens": 512,
+        "max_output_tokens": 8192,
     }
 
     response = model.generate_content(prompt, generation_config=generation_config)
     raw_output = _collect_response_text(response).strip()
 
     cleaned = raw_output.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
-        cleaned = re.sub(r"```$", "", cleaned).strip()
+
+    # Remove unwanted wrappers like ```json ... ```
+    cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"```$", "", cleaned).strip()
 
     parsed = None
     if cleaned:
         try:
             parsed = json.loads(cleaned)
         except Exception:
-            pass
+            raise ValueError("Invalid JSON format")
 
-    if isinstance(parsed, list) and parsed:
-        parsed = parsed[0]
+    if not isinstance(parsed, dict) or "subjects" not in parsed:
+        raise ValueError("Expected JSON with 'subjects', 'overview', and 'overallGrade'")
 
-    score_value = None
-    text_value = ""
-    if isinstance(parsed, dict):
-        score_raw = (
-            parsed.get("score")
-            or parsed.get("rating")
-            or parsed.get("grade")
-            or parsed.get("nota")
-        )
-        text_value = (
-            parsed.get("text")
-            or parsed.get("feedback")
-            or parsed.get("evaluation")
-            or parsed.get("analysis")
-            or ""
-        )
-        try:
-            if score_raw is not None:
-                score_value = float(score_raw)
-        except (TypeError, ValueError):
-            score_value = None
-    else:
-        match = re.search(r"(score|nota)[^0-9]*([0-9]+(?:\.[0-9]+)?)", cleaned, re.IGNORECASE)
-        if match:
-            try:
-                score_value = float(match.group(2))
-            except ValueError:
-                score_value = None
-        text_value = cleaned
-
-    if score_value is not None:
-        score_value = max(0.0, min(100.0, score_value))
-
-    if not text_value:
-        text_value = cleaned or raw_output
-
-    return {
-        "text": str(text_value).strip(),
-        "score": score_value,
+    result = {
+        "subjects": [],
+        "overview": parsed.get("overview") or "",
+        "overallGrade": None,
         "raw": raw_output,
     }
+
+    # Parse subjects
+    if isinstance(parsed["subjects"], list):
+        for subj in parsed["subjects"]:
+            subject_title = subj.get("subject") or "Unknown"
+            grade_raw = subj.get("grade")
+            comment = subj.get("comment") or ""
+
+            try:
+                grade_value = float(grade_raw) if grade_raw is not None else None
+            except (TypeError, ValueError):
+                grade_value = None
+
+            if grade_value is not None:
+                grade_value = max(0.0, min(100.0, grade_value))
+
+            result["subjects"].append({
+                "subject": subject_title,
+                "grade": grade_value,
+                "comment": comment.strip(),
+            })
+
+    # Parse overall grade
+    try:
+        overall_raw = parsed.get("overallGrade")
+        result["overallGrade"] = float(overall_raw) if overall_raw is not None else None
+    except (TypeError, ValueError):
+        result["overallGrade"] = None
+
+    if result["overallGrade"] is not None:
+        result["overallGrade"] = max(0.0, min(100.0, result["overallGrade"]))
+
+    return result

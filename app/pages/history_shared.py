@@ -81,10 +81,11 @@ def _subjects_label(entry: Dict[str, Any]) -> str:
 
 def _comments_markdown(comments: List[Dict[str, Any]]) -> str:
     if not comments:
-        return "ℹ️ Nenhum comentário registrado ainda."
+        return "Info: Nenhum comentário registrado ainda."
     lines = ["### Comentários dos professores"]
     for comment in comments:
-        author = comment.get("author_name") or comment.get("author_login") or "Professor(a)"
+        author = comment.get("author_name") or comment.get(
+            "author_login") or "Professor(a)"
         created = _format_timestamp(comment.get("created_at"))
         text = comment.get("text") or ""
         score = comment.get("score")
@@ -98,7 +99,8 @@ def _comments_markdown(comments: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-_SPEAKER_PATTERN = re.compile(r"^\s*([\wÀ-ÖØ-öø-ÿ]+(?:\s+[\wÀ-ÖØ-öø-ÿ]+)*)\s*:\s*")
+_SPEAKER_PATTERN = re.compile(
+    r"^\s*([\wÀ-ÖØ-öø-ÿ]+(?:\s+[\wÀ-ÖØ-öø-ÿ]+)*)\s*:\s*")
 
 
 def _normalize_speaker(label: str) -> Optional[str]:
@@ -126,7 +128,8 @@ def _format_transcript_markdown(transcript: str) -> str:
     if not transcript:
         return ""
 
-    normalized_lines = transcript.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    normalized_lines = transcript.replace(
+        "\r\n", "\n").replace("\r", "\n").split("\n")
     formatted_lines: List[str] = []
     previous_speaker: Optional[str] = None
 
@@ -168,7 +171,8 @@ def _history_table_data(entries: List[Dict[str, Any]]) -> List[List[str]]:
     table: List[List[str]] = []
     for chat in entries:
         student = chat.get("student_name") or chat.get("student_login") or "—"
-        classroom = chat.get("classroom_name") or chat.get("classroom_id") or "—"
+        classroom = chat.get("classroom_name") or chat.get(
+            "classroom_id") or "—"
         subjects = _subjects_label(chat)
         summary = chat.get("summary_preview") or chat.get("summary") or ""
         grade = chat.get("grade")
@@ -184,7 +188,8 @@ def _history_table_data(entries: List[Dict[str, Any]]) -> List[List[str]]:
         except (TypeError, ValueError):
             grade_txt = str(grade)
         started = _format_timestamp(chat.get("started_at"))
-        table.append([student, classroom, subjects, summary, grade_txt, started])
+        table.append([student, classroom, subjects,
+                     summary, grade_txt, started])
     return table
 
 
@@ -196,7 +201,8 @@ def prepare_history_listing(
     dropdown_label: Callable[[Dict[str, Any]], str],
     dropdown_value_key: str = "id",
     empty_message: str,
-    found_message: Union[str, Callable[[int], str]] = "✅ {count} chat(s) encontrados.",
+    found_message: Union[str, Callable[[int], str]
+                         ] = "OK: {count} chat(s) encontrados.",
 ) -> Tuple[Any, List[Dict[str, Any]], Any, str, Optional[str]]:
     """Normalize shared outputs for history listings.
 
@@ -249,7 +255,8 @@ def prepare_history_listing(
 
 
 def _chat_metadata_md(chat: Dict[str, Any]) -> str:
-    student = chat.get("student_name") or chat.get("student_login") or chat.get("student_id")
+    student = chat.get("student_name") or chat.get(
+        "student_login") or chat.get("student_id")
     classroom = chat.get("classroom_name") or chat.get("classroom_id") or "—"
     subjects = _subjects_label(chat)
     started = _format_timestamp(chat.get("started_at"))
@@ -295,11 +302,11 @@ def load_chat_entry(
         return ChatLoadResult(
             chat_id=None,
             chat=None,
-            metadata_md="⚠️ Selecione um chat válido.",
+            metadata_md="Warning: Selecione um chat válido.",
             summary_text="",
             preview_text="",
             evaluation_text="",
-            comments_md="ℹ️ Nenhum comentário registrado ainda.",
+            comments_md="Info: Nenhum comentário registrado ainda.",
             transcript_text="",
             download_path=None,
             download_visible=False,
@@ -323,9 +330,9 @@ def load_chat_entry(
                 storage_path=path,
             )
         except SupabaseConfigurationError:
-            notice_msg = "⚠️ Configure o Supabase Storage para baixar o PDF do chat."
+            notice_msg = "Warning: Configure o Supabase Storage para baixar o PDF do chat."
         except SupabaseOperationError as err:
-            notice_msg = f"❌ Erro ao baixar PDF: {err}"
+            notice_msg = f"ERROR: Erro ao baixar PDF: {err}"
             notice_is_error = True
         else:
             try:
@@ -334,11 +341,11 @@ def load_chat_entry(
                     download_path = tmp.name
                 transcript_text = extractPdfText(download_path) or ""
             except Exception as exc:  # pragma: no cover - depende de I/O externo
-                notice_msg = f"⚠️ Não foi possível ler o PDF: {exc}"
+                notice_msg = f"Warning: Não foi possível ler o PDF: {exc}"
                 download_path = None
                 transcript_text = ""
     else:
-        notice_msg = "ℹ️ Este chat não possui PDF armazenado."
+        notice_msg = "Info: Este chat não possui PDF armazenado."
 
     if current_download_path and current_download_path != download_path:
         if os.path.exists(current_download_path):
@@ -354,6 +361,7 @@ def load_chat_entry(
     comments_md = _comments_markdown(chat.get("teacher_comments") or [])
     evaluation_text = chat.get("auto_evaluation") or ""
     auto_score = chat.get("auto_evaluation_score")
+    subjects = chat.get("auto_evaluation_subjects") or []
     display_eval = evaluation_text
     try:
         if auto_score is not None:
@@ -371,7 +379,25 @@ def load_chat_entry(
                 if evaluation_text
                 else score_label
             )
-    evaluation_text = display_eval
+
+    # Add per-subject evaluation if available
+    if subjects:
+        subject_lines = ["**Avaliação por assunto**"]
+        for item in subjects:
+            subject_name = item.get("subject") or item.get("name") or "—"
+            grade_raw = item.get("grade")
+            try:
+                grade = f"{float(grade_raw):.1f}"
+            except (TypeError, ValueError):
+                grade = str(grade_raw) if grade_raw not in (None, "") else "0.0"
+            comment = (item.get("comment") or "").strip()
+            if not comment and grade in {"0", "0.0"}:
+                comment = f"Não houve interação ou discussão sobre o tópico '{subject_name}'."
+            subject_lines.append(f"- **{subject_name}** — {grade}: {comment}")
+        display_eval = f"{display_eval}\n\n" + "\n".join(subject_lines)
+
+    evaluation_text = display_eval.strip()
+
     preview_text = transcript_markdown if transcript_markdown else ""
     if not preview_text:
         preview_text = "(PDF indisponível ou sem conteúdo.)"
@@ -401,21 +427,21 @@ def generate_auto_evaluation(
     history_entries: Optional[List[Dict[str, Any]]],
 ):
     if not chat_id:
-        return "", history_entries or [], None, "⚠️ Selecione um chat."
+        return "", history_entries or [], None, "Warning: Selecione um chat."
     if _vertex_err:
-        return "", history_entries or [], None, f"⚠️ Vertex indisponível: {_vertex_err}"
+        return "", history_entries or [], None, f"Warning: Vertex indisponível: {_vertex_err}"
     if not VERTEX_CFG:
-        return "", history_entries or [], None, "⚠️ Configure as credenciais do Vertex para gerar avaliações."
+        return "", history_entries or [], None, "Warning: Configure as credenciais do Vertex para gerar avaliações."
 
     entries = history_entries or []
     chat = next((entry for entry in entries if entry.get("id") == chat_id), None)
     if not chat:
-        return "", entries, None, "⚠️ Chat não encontrado."
+        return "", entries, None, "Warning: Chat não encontrado."
 
     transcript_text = (transcript or chat.get("transcript_text") or "").strip()
     if not transcript_text:
         metadata = _chat_metadata_md(chat)
-        return "", entries, metadata, "⚠️ Transcript do chat indisponível para avaliação."
+        return "", entries, metadata, "Warning: Transcript do chat indisponível para avaliação."
 
     try:
         evaluation_payload = generate_chat_evaluation(
@@ -425,73 +451,129 @@ def generate_auto_evaluation(
         )
     except Exception as exc:  # pragma: no cover - depende de chamada externa
         metadata = _chat_metadata_md(chat)
-        return "", entries, metadata, f"❌ Erro ao gerar avaliação: {exc}"
+        return "", entries, metadata, f"ERROR: Erro ao gerar avaliação: {exc}"
 
     if isinstance(evaluation_payload, dict):
-        evaluation_text = evaluation_payload.get("text") or ""
-        evaluation_score = evaluation_payload.get("score")
+        subjects = evaluation_payload.get("subjects") or []
+        overview = evaluation_payload.get("overview") or ""
+        overall_grade = evaluation_payload.get("overallGrade")
         raw_response = evaluation_payload.get("raw")
     else:
-        evaluation_text = str(evaluation_payload or "")
-        evaluation_score = None
+        # Fallback if a non-dict sneaks in: treat as free text overview with no subjects/grade
+        subjects = []
+        overview = str(evaluation_payload or "")
+        overall_grade = None
         raw_response = None
 
-    persisted_entry: Optional[Dict[str, Any]] = None
-    notice = "✅ Avaliação automática gerada."
+    # Normalize numeric overall grade (0..100) if present
+    try:
+        if overall_grade is not None:
+            overall_grade = float(overall_grade)
+            overall_grade = max(0.0, min(100.0, overall_grade))
+    except (TypeError, ValueError):
+        overall_grade = None
+
+    # Extra payload persisted alongside the evaluation
     extra_payload = {
-        "text": evaluation_text,
-        "score": evaluation_score,
+        "overview": overview,
+        "overallGrade": overall_grade,
         "raw_response": raw_response,
-        "subjects": chat.get("subjects") or [chat.get("subject_free_text")],
+        "subjects": subjects,  # keep full structured subjects list
     }
+
+    persisted_entry: Optional[Dict[str, Any]] = None
+    notice = "OK: Avaliação automática gerada."
 
     try:
         persisted_entry = record_auto_chat_evaluation(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
             chat_id=chat_id,
-            evaluation_text=evaluation_text,
-            evaluation_score=evaluation_score,
+            evaluation_text=overview,           # store overview as main text
+            evaluation_score=overall_grade,     # store overall grade as score
             extra_payload=extra_payload,
         )
-        stored_text = persisted_entry.get("text") or evaluation_text
-        stored_score = persisted_entry.get("score", evaluation_score)
+        stored_text = persisted_entry.get("overview") or overview
+        stored_score = persisted_entry.get("overall_score", overall_grade)
         stored_at = persisted_entry.get("created_at")
         notice = (
-            f"✅ Avaliação automática registrada (nota {float(stored_score):.1f})."
+            f"OK: Avaliação automática registrada (nota {float(stored_score):.1f})."
             if stored_score is not None
-            else "✅ Avaliação automática registrada."
+            else "OK: Avaliação automática registrada."
         )
     except SupabaseConfigurationError:
-        stored_text = evaluation_text
-        stored_score = evaluation_score
+        stored_text = overview
+        stored_score = overall_grade
         stored_at = None
-        notice = "⚠️ Configure o Supabase para salvar a avaliação automaticamente."
+        notice = "Warning: Configure o Supabase para salvar a avaliação automaticamente."
     except SupabaseOperationError as err:
-        stored_text = evaluation_text
-        stored_score = evaluation_score
+        stored_text = overview
+        stored_score = overall_grade
         stored_at = None
-        notice = f"❌ Avaliação não salva no Supabase: {err}"
+        notice = f"ERROR: Avaliação não salva no Supabase: {err}"
 
+    # Update chat metadata (keep old keys for compatibility + add specific ones)
     if stored_at:
         chat["auto_evaluation_updated_at"] = stored_at
     else:
         chat["auto_evaluation_updated_at"] = datetime.utcnow().isoformat() + "Z"
+
+    # overview (legacy key)
     chat["auto_evaluation"] = stored_text
+    # overall grade (legacy key)
     chat["auto_evaluation_score"] = stored_score
+    chat["auto_evaluation_overview"] = stored_text           # explicit
+    chat["auto_evaluation_overall_grade"] = stored_score     # explicit
+    chat["auto_evaluation_subjects"] = subjects              # full subject list
 
     metadata = _chat_metadata_md(chat)
 
-    display_text = stored_text or ""
+    # Build user-facing display text:
+    lines = []
     final_score = stored_score
+
+    # Header with overall grade (if any)
     try:
         if final_score is not None:
-            prefix = f"Nota automática: {float(final_score):.1f}"
-            display_text = f"{prefix}\n\n{display_text}".strip() if display_text else prefix
+            lines.append(f"Nota automática: {float(final_score):.1f}")
     except (TypeError, ValueError):
         if final_score not in (None, ""):
-            prefix = f"Nota automática: {final_score}"
-            display_text = f"{prefix}\n\n{display_text}".strip() if display_text else prefix
+            lines.append(f"Nota automática: {final_score}")
+
+    # Overview
+    if stored_text:
+        lines.append("")
+        lines.append("**Resumo geral**")
+        lines.append(stored_text.strip())
+
+    # Subjects (each: title, grade, comment)
+    if subjects:
+        lines.append("")
+        lines.append("**Avaliação por assunto**")
+        for subj in subjects:
+            title = (subj.get("subject") or "Assunto").strip()
+            grade = subj.get("grade")
+            comment = (subj.get("comment") or "").strip()
+
+            grade_txt = ""
+            try:
+                if grade is not None:
+                    g = float(grade)
+                    g = max(0.0, min(100.0, g))
+                    grade_txt = f"{g:.1f}"
+            except (TypeError, ValueError):
+                grade_txt = str(grade) if grade not in (None, "") else ""
+
+            if grade_txt and comment:
+                lines.append(f"- **{title}** — {grade_txt}: {comment}")
+            elif grade_txt:
+                lines.append(f"- **{title}** — {grade_txt}")
+            elif comment:
+                lines.append(f"- **{title}** — {comment}")
+            else:
+                lines.append(f"- **{title}**")
+
+    display_text = "\n".join(lines).strip() or stored_text or ""
 
     return display_text, entries, metadata, notice
 
@@ -508,9 +590,9 @@ def append_chat_comment(
 ):
     text = (comment_text or "").strip()
     if not chat_id:
-        return history_entries or [], None, "⚠️ Selecione um chat."
+        return history_entries or [], None, "Warning: Selecione um chat."
     if not text:
-        return history_entries or [], None, "⚠️ Escreva um comentário antes de enviar."
+        return history_entries or [], None, "Warning: Escreva um comentário antes de enviar."
 
     try:
         numeric_rating = float(rating)
@@ -518,7 +600,7 @@ def append_chat_comment(
         return (
             history_entries or [],
             None,
-            "⚠️ Informe uma nota numérica antes de registrar o comentário.",
+            "Warning: Informe uma nota numérica antes de registrar o comentário.",
         )
 
     try:
@@ -533,9 +615,9 @@ def append_chat_comment(
             score=numeric_rating,
         )
     except SupabaseConfigurationError:
-        return history_entries or [], None, "⚠️ Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para salvar comentários."
+        return history_entries or [], None, "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para salvar comentários."
     except SupabaseOperationError as err:
-        return history_entries or [], None, f"❌ Erro ao salvar comentário: {err}"
+        return history_entries or [], None, f"ERROR: Erro ao salvar comentário: {err}"
 
     updated: List[Dict[str, Any]] = []
     comments_md = ""
@@ -547,14 +629,14 @@ def append_chat_comment(
             chat["teacher_comments"] = comments
             comments_md = _comments_markdown(comments)
         updated.append(chat)
-    message = "✅ Comentário registrado."
+    message = "OK: Comentário registrado."
     score = entry.get("score")
     try:
         if score is not None:
-            message = f"✅ Comentário registrado com nota {float(score):.1f}."
+            message = f"OK: Comentário registrado com nota {float(score):.1f}."
     except (TypeError, ValueError):
         if score not in (None, ""):
-            message = f"✅ Comentário registrado com nota {score}."
+            message = f"OK: Comentário registrado com nota {score}."
 
     return updated, comments_md, message
 

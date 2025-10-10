@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
+import json, re
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from postgrest.exceptions import APIError
@@ -248,7 +248,8 @@ class UserRecord:
 
     @classmethod
     def from_raw(cls, data: Dict[str, Any]) -> "UserRecord":
-        username = data.get("username") or data.get("name") or data.get("login")
+        username = data.get("username") or data.get(
+            "name") or data.get("login")
         full_name = data.get("full_name") or data.get("display_name")
         if not full_name:
             # Dados legados armazenavam o "name" como display name; mantém compatibilidade.
@@ -354,7 +355,8 @@ def create_user_record(
         raise SupabaseOperationError("Login inválido para criação de usuário.")
 
     normalized_username = (username or identifier or "").strip() or identifier
-    normalized_full_name = (full_name or display_name or normalized_username).strip()
+    normalized_full_name = (
+        full_name or display_name or normalized_username).strip()
 
     payload: Dict[str, Any] = {
         "username": normalized_username,
@@ -428,7 +430,8 @@ def _fetch_users_map(
         uid = row.get("id")
         if not uid:
             continue
-        login = _normalize_login(row.get("email") or row.get("username") or row.get("name"))
+        login = _normalize_login(
+            row.get("email") or row.get("username") or row.get("name"))
         mapping[uid] = {
             "login": login,
             "display_name": row.get("full_name")
@@ -455,7 +458,8 @@ def _normalize_evaluation_row(
     except (TypeError, ValueError):
         score_value = None
 
-    author_login = info.get("login") or _normalize_login(row.get("evaluator_login") or "")
+    author_login = info.get("login") or _normalize_login(
+        row.get("evaluator_login") or "")
     author_name = (
         info.get("display_name")
         or row.get("evaluator_name")
@@ -502,8 +506,10 @@ def fetch_chat_evaluations_for_ids(
         raise SupabaseOperationError(str(exc)) from exc
 
     rows = response.data or []
-    user_ids: Set[Optional[str]] = {row.get("evaluator_id") for row in rows if row.get("evaluator_id")}
-    user_map = _fetch_users_map(client, user_ids, users_table=users_table) if user_ids else {}
+    user_ids: Set[Optional[str]] = {
+        row.get("evaluator_id") for row in rows if row.get("evaluator_id")}
+    user_map = _fetch_users_map(
+        client, user_ids, users_table=users_table) if user_ids else {}
 
     evaluations: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -543,18 +549,20 @@ def fetch_latest_auto_evaluations(
         if not chat_id or chat_id in results:
             continue
         payload = _ensure_dict(row.get("bot_evaluation"))
-        text_value = payload.get("text") or payload.get("evaluation") or payload.get("content")
-        if isinstance(text_value, dict):
-            text_value = json.dumps(text_value, ensure_ascii=False)
-        text_str = str(text_value).strip() if text_value is not None else ""
-        score_value = payload.get("score") or payload.get("rating")
+        overall_evaluation = payload.get("overview") or payload.get(
+            "evaluation") or payload.get("content")
+        subjects_list = payload.get("subjects")
+        clean_overall_evaluation = str(overall_evaluation).strip(
+        ) if overall_evaluation is not None else ""
+        overall_score = payload.get("score")
         try:
-            score = float(score_value) if score_value is not None else None
+            score = float(overall_score) if overall_score is not None else None
         except (TypeError, ValueError):
             score = None
         results[chat_id] = {
             "id": row.get("id"),
-            "text": text_str,
+            "subjects": subjects_list,
+            "overview": clean_overall_evaluation,
             "score": score,
             "created_at": row.get("created_at"),
             "raw": payload,
@@ -571,32 +579,89 @@ def enrich_chats_with_evaluations(
     if not chats:
         return chats
 
-    chat_ids = [chat.get("id") for chat in chats if chat.get("id")]
-    manual_map = fetch_chat_evaluations_for_ids(
-        client, chat_ids, users_table=users_table
-    )
-    auto_map = fetch_latest_auto_evaluations(client, chat_ids)
+    chatIds = [c.get("id") for c in chats if c.get("id")]
+    manualMap = fetch_chat_evaluations_for_ids(
+        client, chatIds, users_table=users_table)
+    autoMap = fetch_latest_auto_evaluations(client, chatIds)
 
     for chat in chats:
-        chat_id = chat.get("id")
-        existing_comments = _normalize_comment_entries(chat.get("teacher_comments"))
-        db_comments = manual_map.get(chat_id, [])
-        combined: List[Dict[str, Any]] = []
-        if db_comments:
-            combined.extend(db_comments)
-        if existing_comments:
-            combined.extend(existing_comments)
+        chatId = chat.get("id")
+
+        # Merge manual + existing comments
+        existingComments = _normalize_comment_entries(
+            chat.get("teacher_comments"))
+        dbComments = manualMap.get(chatId, [])
+        combined = []
+        if dbComments:
+            combined.extend(dbComments)
+        if existingComments:
+            combined.extend(existingComments)
         if combined:
-            combined.sort(key=lambda item: item.get("created_at") or "")
+            combined.sort(key=lambda it: it.get("created_at") or "")
             chat["teacher_comments"] = combined
         else:
             chat["teacher_comments"] = []
 
-        auto_entry = auto_map.get(chat_id)
-        if auto_entry:
-            chat["auto_evaluation"] = auto_entry.get("text") or chat.get("auto_evaluation")
-            chat["auto_evaluation_score"] = auto_entry.get("score")
-            chat["auto_evaluation_updated_at"] = auto_entry.get("created_at")
+        # Auto-evaluation fields + subjects (all inline)
+        autoEntry = autoMap.get(chatId)
+        if autoEntry:
+            chat["auto_evaluation"] = autoEntry.get("overview")
+            chat["auto_evaluation_score"] = autoEntry.get("score")
+            chat["auto_evaluation_updated_at"] = autoEntry.get("created_at")
+
+            subjectsOut: List[Dict[str, Any]] = []
+
+            # 1) Prefer structured subjects
+            subj = autoEntry.get("subjects")
+            if isinstance(subj, list) and subj:
+                for it in subj:
+                    if isinstance(it, dict):
+                        subject = it.get("subject") or it.get(
+                            "name") or it.get("topic") or ""
+                        comment = it.get("comment") or it.get("feedback") or ""
+                        gradeRaw = it.get("grade", it.get("score"))
+                        grade: Optional[int]
+                        try:
+                            grade = int(gradeRaw) if isinstance(
+                                gradeRaw, int) else int(round(float(gradeRaw)))
+                        except Exception:
+                            grade = None
+                        subjectsOut.append(
+                            {"subject": subject, "grade": grade, "comment": comment})
+
+            # 2) If empty, try to parse from fenced JSON in raw_response/raw
+            if not subjectsOut:
+                raw = autoEntry.get(
+                    "raw_response") or autoEntry.get("raw") or ""
+                if isinstance(raw, str) and raw.strip():
+                    cleaned = re.sub(r"^```(?:json)?\s*", "",
+                                     raw.strip(), flags=re.IGNORECASE)
+                    cleaned = re.sub(r"\s*```$", "", cleaned)
+                    try:
+                        parsed = json.loads(cleaned)
+                        embedded = parsed.get("subjects")
+                        if isinstance(embedded, list):
+                            for it in embedded:
+                                if isinstance(it, dict):
+                                    subject = it.get("subject") or it.get(
+                                        "name") or it.get("topic") or ""
+                                    comment = it.get("comment") or it.get(
+                                        "feedback") or ""
+                                    gradeRaw = it.get("grade", it.get("score"))
+                                    try:
+                                        grade = int(gradeRaw) if isinstance(
+                                            gradeRaw, int) else int(round(float(gradeRaw)))
+                                    except Exception:
+                                        grade = None
+                                    subjectsOut.append(
+                                        {"subject": subject, "grade": grade, "comment": comment})
+                    except Exception:
+                        pass
+
+            chat["auto_evaluation_subjects"] = subjectsOut
+        else:
+            chat["auto_evaluation_subjects"] = []
+
     return chats
 
 
@@ -617,14 +682,17 @@ def add_chat_comment(
     if not normalized_text:
         raise SupabaseOperationError("Informe um comentário válido.")
     if not chat_id:
-        raise SupabaseOperationError("Identificador do chat ausente para registrar comentário.")
+        raise SupabaseOperationError(
+            "Identificador do chat ausente para registrar comentário.")
     if not author_id:
-        raise SupabaseOperationError("Identificador do avaliador ausente para registrar comentário.")
+        raise SupabaseOperationError(
+            "Identificador do avaliador ausente para registrar comentário.")
 
     try:
         numeric_score = float(score)
     except (TypeError, ValueError):
-        raise SupabaseOperationError("Informe uma nota numérica válida para o comentário.")
+        raise SupabaseOperationError(
+            "Informe uma nota numérica válida para o comentário.")
 
     client = _get_client(url, key)
     payload = {
@@ -678,7 +746,8 @@ def record_auto_chat_evaluation(
     record = {"chat_id": chat_id, "bot_evaluation": payload}
 
     try:
-        response = client.table("automated_chat_evaluations").insert(record).execute()
+        response = client.table(
+            "automated_chat_evaluations").insert(record).execute()
     except APIError as err:
         raise _handle_api_error(err) from err
     except Exception as exc:
@@ -688,7 +757,8 @@ def record_auto_chat_evaluation(
     stored_payload = _ensure_dict(row.get("bot_evaluation")) or payload
     text_value = stored_payload.get("text") or ""
     try:
-        score_value = float(stored_payload.get("score")) if stored_payload.get("score") is not None else None
+        score_value = float(stored_payload.get("score")) if stored_payload.get(
+            "score") is not None else None
     except (TypeError, ValueError):
         score_value = None
 
