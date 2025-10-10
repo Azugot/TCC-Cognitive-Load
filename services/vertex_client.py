@@ -13,47 +13,30 @@ except Exception:
     _VertexGenerativeModel = None
     _GcpCredentials = None
 
-DEFAULT_LOCATIONS = [
-    "./acquired-router-470921-a3-a19e3f67c416.json"
-]
-
-
 def _load_vertex_cfg_from_disk():
-    preset_path = os.environ.get("VERTEX_SA_PATH", "").strip()
-    candidate_paths = ([preset_path] if preset_path else []
-                       ) + DEFAULT_LOCATIONS
-    last_err = None
-    for p in candidate_paths:
-        try:
-            if not p:
-                continue
-            if os.path.exists(p):
-                with open(p, "r", encoding="utf-8") as f:
-                    sa = json.load(f)
-                project = sa.get("project_id")
-                if not project:
-                    raise ValueError("Campo 'project_id' ausente no JSON.")
-                if not sa.get("private_key") or not sa.get("client_email"):
-                    raise ValueError(
-                        "Campos 'private_key' e 'client_email' são obrigatórios.")
-                location = os.environ.get(
-                    "GOOGLE_CLOUD_LOCATION", "us-central1")
-                model = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash")
-                return {
-                    "project": project,
-                    "location": location,
-                    "model": model,
-                    "serviceAccount": sa,
-                    "source_path": p,
-                }
-        except Exception as e:
-            last_err = e
-            continue
-    if last_err:
-        raise RuntimeError(
-            f"Não foi possível carregar as credenciais do Vertex de disco. Último erro: {last_err}")
-    raise RuntimeError(
-        "Arquivo service-account.json não encontrado. Coloque-o ao lado do app ou em /mnt/data/.")
+    try:
+        from app.config import VERTEX_SERVICE_ACCOUNT as sa
+    except Exception as e:
+        raise RuntimeError(f"Falha ao importar credenciais de config.py: {e}")
+
+    project = sa.get("project_id")
+    if not project:
+        raise ValueError("Campo 'project_id' ausente no JSON.")
+
+    if not sa.get("private_key") or not sa.get("client_email"):
+        raise ValueError(
+            "Campos 'private_key' e 'client_email' são obrigatórios.")
+
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+    model = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash")
+
+    return {
+        "project": project,
+        "location": location,
+        "model": model,
+        "serviceAccount": sa,
+        "source_path": "config.VERTEX_SERVICE_ACCOUNT",
+    }
 
 
 try:
@@ -138,7 +121,8 @@ def _collect_response_text(response):
             continue
         parts = getattr(content, "parts", None) or []
         texts = [getattr(part, "text", None) for part in parts]
-        combined = " ".join(t for t in texts if isinstance(t, str) and t.strip())
+        combined = " ".join(
+            t for t in texts if isinstance(t, str) and t.strip())
         if combined.strip():
             return combined
 
@@ -201,7 +185,8 @@ def summarize_chat_history(messages, cfg, *, max_phrases: int = 2) -> str:
         "max_output_tokens": 256,
     }
 
-    response = model.generate_content(prompt, generation_config=generation_config)
+    response = model.generate_content(
+        prompt, generation_config=generation_config)
     summary = _collect_response_text(response)
     limited = _limit_phrases(summary, max_phrases=max_phrases)
     return limited
@@ -220,7 +205,8 @@ def generate_chat_evaluation(
 
     subject_text = ""
     if isinstance(subjects, (list, tuple, set)):
-        normalized = [str(item).strip() for item in subjects if str(item).strip()]
+        normalized = [str(item).strip()
+                      for item in subjects if str(item).strip()]
         subject_text = ", ".join(normalized)
     elif isinstance(subjects, str):
         subject_text = subjects.strip()
@@ -267,13 +253,15 @@ def generate_chat_evaluation(
         "max_output_tokens": 8192,
     }
 
-    response = model.generate_content(prompt, generation_config=generation_config)
+    response = model.generate_content(
+        prompt, generation_config=generation_config)
     raw_output = _collect_response_text(response).strip()
 
     cleaned = raw_output.strip()
 
     # Remove unwanted wrappers like ```json ... ```
-    cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^```(?:json)?", "", cleaned,
+                     flags=re.IGNORECASE).strip()
     cleaned = re.sub(r"```$", "", cleaned).strip()
 
     parsed = None
@@ -284,7 +272,8 @@ def generate_chat_evaluation(
             raise ValueError("Invalid JSON format")
 
     if not isinstance(parsed, dict) or "subjects" not in parsed:
-        raise ValueError("Expected JSON with 'subjects', 'overview', and 'overallGrade'")
+        raise ValueError(
+            "Expected JSON with 'subjects', 'overview', and 'overallGrade'")
 
     result = {
         "subjects": [],
@@ -301,7 +290,8 @@ def generate_chat_evaluation(
             comment = subj.get("comment") or ""
 
             try:
-                grade_value = float(grade_raw) if grade_raw is not None else None
+                grade_value = float(
+                    grade_raw) if grade_raw is not None else None
             except (TypeError, ValueError):
                 grade_value = None
 
@@ -317,7 +307,8 @@ def generate_chat_evaluation(
     # Parse overall grade
     try:
         overall_raw = parsed.get("overallGrade")
-        result["overallGrade"] = float(overall_raw) if overall_raw is not None else None
+        result["overallGrade"] = float(
+            overall_raw) if overall_raw is not None else None
     except (TypeError, ValueError):
         result["overallGrade"] = None
 
