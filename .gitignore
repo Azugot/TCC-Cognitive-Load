@@ -3,6 +3,7 @@ supakeys.json
 
 *.pyc
 
+*.vscode
 
 test.py
 config.py

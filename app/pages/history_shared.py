@@ -361,6 +361,7 @@ def load_chat_entry(
     comments_md = _comments_markdown(chat.get("teacher_comments") or [])
     evaluation_text = chat.get("auto_evaluation") or ""
     auto_score = chat.get("auto_evaluation_score")
+    subjects = chat.get("auto_evaluation_subjects") or []
     display_eval = evaluation_text
     try:
         if auto_score is not None:
@@ -378,7 +379,25 @@ def load_chat_entry(
                 if evaluation_text
                 else score_label
             )
-    evaluation_text = display_eval
+
+    # Add per-subject evaluation if available
+    if subjects:
+        subject_lines = ["**Avaliação por assunto**"]
+        for item in subjects:
+            subject_name = item.get("subject") or item.get("name") or "—"
+            grade_raw = item.get("grade")
+            try:
+                grade = f"{float(grade_raw):.1f}"
+            except (TypeError, ValueError):
+                grade = str(grade_raw) if grade_raw not in (None, "") else "0.0"
+            comment = (item.get("comment") or "").strip()
+            if not comment and grade in {"0", "0.0"}:
+                comment = f"Não houve interação ou discussão sobre o tópico '{subject_name}'."
+            subject_lines.append(f"- **{subject_name}** — {grade}: {comment}")
+        display_eval = f"{display_eval}\n\n" + "\n".join(subject_lines)
+
+    evaluation_text = display_eval.strip()
+
     preview_text = transcript_markdown if transcript_markdown else ""
     if not preview_text:
         preview_text = "(PDF indisponível ou sem conteúdo.)"
@@ -474,8 +493,8 @@ def generate_auto_evaluation(
             evaluation_score=overall_grade,     # store overall grade as score
             extra_payload=extra_payload,
         )
-        stored_text = persisted_entry.get("text") or overview
-        stored_score = persisted_entry.get("score", overall_grade)
+        stored_text = persisted_entry.get("overview") or overview
+        stored_score = persisted_entry.get("overall_score", overall_grade)
         stored_at = persisted_entry.get("created_at")
         notice = (
             f"OK: Avaliação automática registrada (nota {float(stored_score):.1f})."
