@@ -83,7 +83,11 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
             email = gr.Textbox(label="E-mail", placeholder="ex: nome@dominio.com")
             fullName = gr.Textbox(label="Nome completo", placeholder="ex: Maria Silva")
         with gr.Row(visible=False) as registerRoleRow:
-            roleRadio = gr.Radio(choices=["Aluno", "Professor", "Admin"], label="Perfil", value="Aluno")
+            roleRadio = gr.Radio(
+                choices=["Aluno", "Professor"],
+                label="Perfil",
+                value="Aluno",
+            )
         with gr.Row():
             btnLogin = gr.Button("Entrar", variant="primary", visible=True)
             btnRegister = gr.Button("Registrar", visible=False)
@@ -225,7 +229,29 @@ def doRegister(username, password, confirm_password, email, full_name, role, aut
     if pw != confirm_pw:
         return gr.update(value="Warning: As senhas informadas não coincidem."), authState
 
-    role_pt = (role or "aluno").strip().lower() or "aluno"
+    requested_role = (role or "").strip().lower() or "aluno"
+    auth_role = str(((authState or {}).get("role") or "")).strip().lower()
+    is_admin_request = bool((authState or {}).get("isAuth") and auth_role == "admin")
+    allowed_roles_public = {"aluno", "professor"}
+    allowed_roles_admin = set(ROLE_PT_TO_DB.keys())
+
+    effective_role = requested_role
+    warning_msg = None
+
+    if is_admin_request:
+        if effective_role not in allowed_roles_admin:
+            warning_msg = (
+                "Warning: Perfil solicitado não é reconhecido. Registro atribuído como Aluno."
+            )
+            effective_role = "aluno"
+    else:
+        if effective_role not in allowed_roles_public:
+            warning_msg = (
+                "Warning: Perfil solicitado não é permitido para auto-registro. Registro atribuído como Aluno."
+            )
+            effective_role = "aluno"
+
+    role_pt = effective_role
     supabase_role = ROLE_PT_TO_DB.get(role_pt, "student")
 
     display_name = name or raw_username or login_email
@@ -257,7 +283,12 @@ def doRegister(username, password, confirm_password, email, full_name, role, aut
         print(f"[AUTH] doRegister: erro inesperado -> {exc}")
         return gr.update(value=f"ERROR: Erro inesperado: {exc}"), authState
 
-    return gr.update(value="OK: Usuário registrado! Faça login com suas credenciais."), authState
+    final_role_label = role_pt.capitalize()
+    success_msg = f"OK: Usuário registrado como perfil **{final_role_label}**. Faça login com suas credenciais."
+    if warning_msg:
+        success_msg = f"{warning_msg}\n\n{success_msg}"
+
+    return gr.update(value=success_msg), authState
 
 
 def doLogin(username, password, authState):
