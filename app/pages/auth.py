@@ -61,8 +61,8 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         header_msg += f"\n\n> **Atenção**: {vertex_err}"
     else:
         header_msg += (
-            f"\n\n> OK: Credenciais Vertex carregadas de: `{(vertex_cfg or {}).get('source_path', '?')}`"
-            f" | Projeto: `{(vertex_cfg or {}).get('project', '?')}` | Região: `{(vertex_cfg or {}).get('location', '?')}`"
+            f"\n\n> OK: Credenciais Vertex carregadas"
+            f" | Projeto: `Cognitive Load Tutor` | Região: `{(vertex_cfg or {}).get('location', '?')}`"
             f" | Modelo: `{(vertex_cfg or {}).get('model', '?')}`"
         )
     header = gr.Markdown(header_msg, elem_id="hdr")
@@ -71,7 +71,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         gr.Markdown("## 🔐 Login / Registro")
         authMode = gr.Radio(["Login", "Registrar"], value="Login", label="Modo de acesso")
         with gr.Row():
-            username = gr.Textbox(label="Usuário", placeholder="ex: augusto")
+            username = gr.Textbox(label="Usuário/Email", placeholder="ex: augusto / nome@dominio.com")
             password = gr.Textbox(label="Senha", type="password", placeholder="••••••••")
             confirmPassword = gr.Textbox(
                 label="Confirmar senha",
@@ -110,6 +110,12 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         switch_auth_mode,
         inputs=authMode,
         outputs=[registerRow, registerRoleRow, btnLogin, btnRegister, confirmPassword, loginMsg],
+    )
+    
+    authMode.change(
+        switch_user_login_message,
+        inputs=authMode,
+        outputs=username,
     )
 
     return AuthViews(
@@ -213,6 +219,13 @@ def switch_auth_mode(mode):
         gr.update(visible=is_register, value=""),
         gr.update(value=""),
     )
+
+def switch_user_login_message(mode):
+    is_register = str(mode or "").strip().lower() == "registrar"
+    if not is_register:
+            return gr.update(label="Usuário/Email", placeholder="ex: augusto / nome@dominio.com")
+    else:
+        return gr.update(label="Usuário", placeholder="ex: augusto")
 
 
 def doRegister(username, password, confirm_password, email, full_name, role, authState):
