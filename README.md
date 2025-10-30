@@ -20,7 +20,7 @@ arquivo `.env`):
 ```
 GCP_PROJECT_ID
 GCP_PRIVATE_KEY_ID
-GCP_PRIVATE_KEY        # use `\n` para quebras de linha
+GCP_PRIVATE_KEY
 GCP_CLIENT_EMAIL
 GCP_CLIENT_ID
 GCP_CLIENT_X509_CERT_URL
