@@ -518,7 +518,7 @@ def _teacher_classrooms_outputs(auth, classrooms, notice="", current_value=None)
 
 
 def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
-    uname_norm = _normalize_username(uname)
+    uname_norm = uname
     if not cls_id or not uname_norm:
         return classrooms, subjects, "Warning: Informe sala e username."
     if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):
@@ -563,6 +563,8 @@ def teacher_add_teacher(cls_id, uname, classrooms, subjects, auth):
         role_label = "owner"
 
     try:
+        if record.role == 'student':
+            return classrooms, subjects, f"ERROR: Erro ao adicionar professor: Usuário não é um Professor"
         upsert_classroom_teacher(
             SUPABASE_URL,
             SUPABASE_SERVICE_ROLE_KEY,
@@ -708,7 +710,7 @@ def teacher_refresh(auth, classrooms, subjects, current_selection=None):
 
 
 def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
-    uname_norm = _normalize_username(uname)
+    uname_norm = uname
     if not cls_id or not uname_norm:
         return classrooms, subjects, "Warning: Informe sala e username."
     if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):
@@ -763,7 +765,7 @@ def teacher_add_student(cls_id, uname, classrooms, subjects, auth):
 
 
 def teacher_rm_user(cls_id, uname, classrooms, subjects, auth):
-    uname_norm = _normalize_username(uname)
+    uname_norm = uname
     if not cls_id or not uname_norm:
         return classrooms, subjects, "Warning: Informe sala e username."
     if not (_auth_user_id(auth) or _teacher_username(auth) or _is_admin(auth)):

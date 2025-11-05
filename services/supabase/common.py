@@ -277,7 +277,7 @@ def _handle_api_error(error: APIError) -> SupabaseError:
 def fetch_user_record(url: str, key: str, table: str, login: str) -> Optional[UserRecord]:
     """Fetch a user record by login identifier (email)."""
 
-    identifier = _normalize_login(login)
+    identifier = login
     if not identifier:
         return None
 
@@ -315,20 +315,6 @@ def fetch_user_record(url: str, key: str, table: str, login: str) -> Optional[Us
     data = response.data or []
     if data:
         return UserRecord.from_raw(data[0])
-
-    # Compatibilidade com instâncias antigas que ainda utilizam a coluna "name".
-    try:
-        response = (
-            client.table(table)
-            .select("id,username,full_name,email,password_hash,role,name")
-            .eq("name", identifier)
-            .limit(1)
-            .execute()
-        )
-    except APIError as err:
-        raise _handle_api_error(err) from err
-    except Exception as exc:
-        raise SupabaseOperationError(str(exc)) from exc
 
     data = response.data or []
     if data:
