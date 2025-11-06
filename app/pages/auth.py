@@ -261,7 +261,7 @@ def doRegister(username, password, confirm_password, email, full_name, role, aut
 
 
 def doLogin(username, password, authState):
-    uname = (username or "").strip().lower()
+    uname = (username or "").strip()
     pw = (password or "").strip()
     if not uname or not pw:
         return gr.update(value="Warning: Informe usuário e senha."), authState
