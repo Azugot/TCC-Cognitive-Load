@@ -23,9 +23,11 @@ from app.pages.chat import build_studio_page
 from app.pages.student import (
     StudentViews,
     build_student_views,
+    student_auto_open_rooms,
     student_history_dropdown,
     student_go_rooms,
     student_rooms_back,
+    student_set_exit_label,
     student_rooms_refresh,
 )
 from app.pages.teacher import (
@@ -190,14 +192,38 @@ def build_app() -> gr.Blocks:
             student_history_dropdown,
             inputs=[auth_state, classrooms_state, student_views.history_class_dropdown],
             outputs=student_views.history_class_dropdown,
+        ).then(
+            student_set_exit_label,
+            outputs=[student_views.rooms_back_button],
         )
 
         student_views.rooms_back_button.click(
-            student_rooms_back,
-            outputs=[auth_views.view_home, student_views.rooms_view],
+            _doLogout,
+            outputs=[
+                auth_state,
+                auth_views.header,
+                auth_views.view_login,
+                auth_views.view_home,
+                admin_views.home,
+                studio_view.container,
+                admin_views.classrooms,
+                admin_views.history,
+                admin_views.evaluate,
+                admin_views.progress,
+                admin_views.admin_page,
+            ],
         ).then(
-            lambda: gr.update(visible=False),
-            outputs=student_views.setup_view,
+            _logout_cleanup,
+            outputs=[
+                teacher_view.container,
+                student_views.rooms_view,
+                student_views.setup_view,
+                student_views.documents_markdown,
+                student_views.documents_dropdown,
+                student_views.documents_state,
+                student_views.documents_download_button,
+                student_views.documents_notice,
+            ],
         )
 
         auth_views.btn_view_students.click(
@@ -240,9 +266,36 @@ def build_app() -> gr.Blocks:
             inputs=[auth_state, classrooms_state, subjects_state],
             outputs=[classrooms_state, subjects_state],
         ).then(
+            student_auto_open_rooms,
+            inputs=[
+                auth_state,
+                classrooms_state,
+                subjects_state,
+                student_views.history_class_dropdown,
+                student_selected_class,
+                student_views.documents_state,
+            ],
+            outputs=[
+                auth_views.view_home,
+                student_views.rooms_view,
+                student_views.setup_view,
+                student_views.rooms_dropdown,
+                student_views.rooms_info,
+                student_selected_class,
+                student_views.documents_markdown,
+                student_views.documents_dropdown,
+                student_views.documents_state,
+                student_views.documents_download_button,
+                student_views.documents_notice,
+                student_views.history_class_dropdown,
+            ],
+        ).then(
             teacher_history_dropdown,
             inputs=[auth_state, classrooms_state, teacher_view.history_class_dropdown],
             outputs=teacher_view.history_class_dropdown,
+        ).then(
+            student_set_exit_label,
+            outputs=[student_views.rooms_back_button],
         )
 
         auth_views.btn_register.click(
@@ -280,9 +333,36 @@ def build_app() -> gr.Blocks:
             inputs=[auth_state, classrooms_state, subjects_state],
             outputs=[classrooms_state, subjects_state],
         ).then(
+            student_auto_open_rooms,
+            inputs=[
+                auth_state,
+                classrooms_state,
+                subjects_state,
+                student_views.history_class_dropdown,
+                student_selected_class,
+                student_views.documents_state,
+            ],
+            outputs=[
+                auth_views.view_home,
+                student_views.rooms_view,
+                student_views.setup_view,
+                student_views.rooms_dropdown,
+                student_views.rooms_info,
+                student_selected_class,
+                student_views.documents_markdown,
+                student_views.documents_dropdown,
+                student_views.documents_state,
+                student_views.documents_download_button,
+                student_views.documents_notice,
+                student_views.history_class_dropdown,
+            ],
+        ).then(
             teacher_history_dropdown,
             inputs=[auth_state, classrooms_state, teacher_view.history_class_dropdown],
             outputs=teacher_view.history_class_dropdown,
+        ).then(
+            student_set_exit_label,
+            outputs=[student_views.rooms_back_button],
         )
 
         # Logout handling ---------------------------------------------------

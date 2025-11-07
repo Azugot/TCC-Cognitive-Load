@@ -93,11 +93,11 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
         homeGreet = gr.Markdown("## 🏠 Home")
         gr.Markdown("Escolha uma opção para continuar:")
         with gr.Row():
-            btnGoCustomize = gr.Button("⚙️ Personalizar o Chat", variant="primary")
             btnLogout1 = gr.Button("Sair")
         with gr.Row(visible=False) as studentRow:
             btnStudentRooms = gr.Button("🎒 Minhas Salas", variant="secondary")
         with gr.Row(visible=False) as profRow:
+            btnGoCustomize = gr.Button("⚙️ Personalizar o Chat", variant="primary")
             btnViewStudents = gr.Button("👥 Ver alunos cadastrados", variant="secondary")
             btnTeacherClassrooms = gr.Button("🏫 Minhas Salas", variant="primary")
         studentsOut = gr.Markdown("")
@@ -161,6 +161,15 @@ def _route_home(auth):
             gr.update(visible=False),
             gr.update(visible=True),
             gr.update(value=f"## 🧭 Home do Admin — bem-vindo, **{display_name}**"),
+        )
+    elif role == "aluno":
+        print("Role Student")
+        return (
+            gr.update(value=header_txt, visible=True),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(visible=False),
+            gr.update(value=""),
         )
     else:
         return (

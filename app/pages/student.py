@@ -76,8 +76,8 @@ class StudentViews:
     submit_button: gr.Button
     provider_markdown: gr.Markdown
     chatbot: gr.Chatbot
-    clear_button: gr.Button
-    back_to_setup_button: gr.Button
+    #clear_button: gr.Button
+    #back_to_setup_button: gr.Button
     end_chat_button: gr.Button
     chat_input: gr.MultimodalTextbox
     setup_back_button: gr.Button
@@ -554,8 +554,67 @@ def student_go_rooms():
     return gr.update(visible=False), gr.update(visible=True)
 
 
+def student_auto_open_rooms(
+    auth,
+    classrooms,
+    subjects_by_class,
+    current_history_value,
+    selected_class,
+    documents_state_value,
+):
+    role = str((auth or {}).get("role", "")).strip().lower()
+    if role != "aluno":
+        no_update = gr.update()
+        return (
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            selected_class,
+            no_update,
+            no_update,
+            documents_state_value,
+            no_update,
+            no_update,
+            no_update,
+        )
+
+    (
+        dropdown_update,
+        info,
+        default_class,
+        docs_md_update,
+        docs_dropdown_update,
+        docs_state,
+        download_btn_update,
+        docs_notice_update,
+    ) = student_rooms_refresh(auth, classrooms, subjects_by_class)
+    history_update = student_history_dropdown(
+        auth, classrooms, current_history_value
+    )
+    return (
+        gr.update(visible=False),
+        gr.update(visible=True),
+        gr.update(visible=False),
+        dropdown_update,
+        info,
+        default_class,
+        docs_md_update,
+        docs_dropdown_update,
+        docs_state,
+        download_btn_update,
+        docs_notice_update,
+        history_update,
+    )
+
+
 def student_rooms_back():
     return gr.update(visible=True), gr.update(visible=False)
+
+
+def student_set_exit_label():
+    return gr.update(value="Sair")
 
 
 def student_go_setup(auth, cid, classrooms, subjects_by_class):
@@ -1065,11 +1124,10 @@ def build_student_views(
                     "**Chat da Sala** — usa seu tema, subtemas e interesses.")
                 stChatbot = gr.Chatbot(
                     label="Chat (Sala)", type="messages", height=420)
+                #with gr.Row():
+                #    stClear = gr.Button("Limpar chat")
                 with gr.Row():
-                    stClear = gr.Button("Limpar chat")
-                with gr.Row():
-                    stBackToSetup = gr.Button(
-                        "⬅️ Voltar para configuração da sala")
+                    #stBackToSetup = gr.Button("⬅️ Voltar para configuração da sala")
                     stEndChat = gr.Button("Encerrar Chat", variant="stop")
                 allow_file_upload = bool(VERTEX_CFG and not _vertex_err)
                 chat_placeholder = (
@@ -1184,7 +1242,7 @@ def build_student_views(
         outputs=stChatbot,
     ).then(_student_chat_enable, outputs=stChatInput)
 
-    stClear.click(clearChat, outputs=stChatbot)
+    #stClear.click(clearChat, outputs=stChatbot)
 
     stEndChat.click(
         student_end_chat,
@@ -1256,8 +1314,8 @@ def build_student_views(
         ],
     )
 
-    stBackToSetup.click(_student_chat_back_to_setup,
-                        outputs=[stCfgCol, stChatCol])
+    #stBackToSetup.click(_student_chat_back_to_setup,
+    #                    outputs=[stCfgCol, stChatCol])
     stSetupBackRooms.click(
         lambda: (gr.update(visible=False), gr.update(visible=True)),
         inputs=None,
@@ -1383,8 +1441,8 @@ def build_student_views(
         submit_button=stSubmit,
         provider_markdown=stProvider,
         chatbot=stChatbot,
-        clear_button=stClear,
-        back_to_setup_button=stBackToSetup,
+        #clear_button=stClear,
+        #back_to_setup_button=stBackToSetup,
         end_chat_button=stEndChat,
         chat_input=stChatInput,
         setup_back_button=stSetupBackRooms,
@@ -1410,7 +1468,9 @@ __all__ = [
     "student_rooms_refresh",
     "student_on_select",
     "student_go_rooms",
+    "student_auto_open_rooms",
     "student_rooms_back",
+    "student_set_exit_label",
     "student_go_setup",
     "student_apply_setup",
     "student_end_chat",
