@@ -80,7 +80,7 @@ class StudentViews:
     #back_to_setup_button: gr.Button
     end_chat_button: gr.Button
     chat_input: gr.MultimodalTextbox
-    setup_back_button: gr.Button
+    #setup_back_button: gr.Button
     history_class_dropdown: gr.Dropdown
     history_refresh_button: gr.Button
     history_info: gr.Markdown
@@ -1094,9 +1094,9 @@ def build_student_views(
             stHistoryNotice = gr.Markdown("")
 
     with gr.Column(visible=False) as viewStudentSetup:
-        gr.Markdown("## 🧩 Configurar Chat da Sala")
-        with gr.Row():
-            stSetupBackRooms = gr.Button("← Voltar às minhas salas")
+        gr.Markdown("## 🧩Chat da Sala")
+        #with gr.Row():
+        #    stSetupBackRooms = gr.Button("← Voltar às minhas salas")
         with gr.Row():
             with gr.Column(scale=1) as stCfgCol:
                 stAssunto = gr.Textbox(
@@ -1316,11 +1316,11 @@ def build_student_views(
 
     #stBackToSetup.click(_student_chat_back_to_setup,
     #                    outputs=[stCfgCol, stChatCol])
-    stSetupBackRooms.click(
-        lambda: (gr.update(visible=False), gr.update(visible=True)),
-        inputs=None,
-        outputs=[viewStudentSetup, viewStudentRooms],
-    )
+    #stSetupBackRooms.click(
+    #    lambda: (gr.update(visible=False), gr.update(visible=True)),
+    #    inputs=None,
+    #    outputs=[viewStudentSetup, viewStudentRooms],
+    #)
 
     stHistoryRefresh.click(
         student_history_refresh,
@@ -1445,7 +1445,7 @@ def build_student_views(
         #back_to_setup_button=stBackToSetup,
         end_chat_button=stEndChat,
         chat_input=stChatInput,
-        setup_back_button=stSetupBackRooms,
+        #setup_back_button=stSetupBackRooms,
         history_class_dropdown=stHistoryClass,
         history_refresh_button=stHistoryRefresh,
         history_info=stHistoryInfo,
