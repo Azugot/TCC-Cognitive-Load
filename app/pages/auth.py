@@ -29,6 +29,7 @@ from app.config import (
 @dataclass
 class AuthViews:
     header: gr.Markdown
+    aviso: gr.Markdown
     view_login: gr.Column
     view_home: gr.Column
     auth_mode: gr.Radio
@@ -57,6 +58,21 @@ class AuthViews:
 def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_err: Optional[str]) -> AuthViews:
     """Create header, login and shared home sections."""
     header_msg = "### 👋 Bem-vindo! Faça login para continuar."
+    aviso_msg = """# Aviso aos Usuários:
+
+                A todos utilizando a plataforma, agradeço imensamente por utilizarem a plataforma!
+                
+                **Anuncio que hoje, dia 19/11/2025, às 20h, enviarei um e-mail a todos que utilizaram a plataforma**, contendo um breve questionário sobre sua experiência com o chat, marcando o fim do período de coleta de dados.
+                **Ficarei aguardando respostas até sexta-feira, dia 21/11/2025 à noite, por volta das 20h.**
+                
+                Os pontos extras serão distribuídos para aqueles que utilizaram o chat **e responderam ao questionário**.
+                
+                Para aqueles que gostaram da experiência, informo que **vou alterar o modelo da IA para o Gemini Pro** na noite de hoje, que será mantido **até os créditos da GCP acabarem**, ou até o dia **02/12/2025** quando o free trial da Vertex encerra.
+                
+                **Mais uma vez, sou extremamente e imensamente grato pela ajuda!**
+                ---
+                **— Augusto Scardua**
+                """
     if vertex_err:
         header_msg += f"\n\n> **Atenção**: {vertex_err}"
     else:
@@ -66,6 +82,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
             f" | Modelo: `{(vertex_cfg or {}).get('model', '?')}`"
         )
     header = gr.Markdown(header_msg, elem_id="hdr")
+    aviso = gr.Markdown(aviso_msg, elem_id="hdr")
 
     with gr.Column(visible=True) as viewLogin:
         gr.Markdown("## 🔐 Login / Registro")
@@ -110,6 +127,7 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
 
     return AuthViews(
         header=header,
+        aviso=aviso,
         view_login=viewLogin,
         view_home=viewHome,
         auth_mode=authMode,
