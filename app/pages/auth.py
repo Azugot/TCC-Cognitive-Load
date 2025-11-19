@@ -58,8 +58,8 @@ class AuthViews:
 def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_err: Optional[str]) -> AuthViews:
     """Create header, login and shared home sections."""
     header_msg = "### 👋 Bem-vindo! Faça login para continuar."
+    #Message to those utilizing the plataform
     aviso_msg = """# Aviso aos Usuários:
-
                 A todos utilizando a plataforma, agradeço imensamente por utilizarem a plataforma!
                 
                 **Anuncio que hoje, dia 19/11/2025, às 20h, enviarei um e-mail a todos que utilizaram a plataforma**, contendo um breve questionário sobre sua experiência com o chat, marcando o fim do período de coleta de dados.
