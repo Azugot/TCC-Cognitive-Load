@@ -28,7 +28,7 @@ def _load_vertex_cfg_from_disk():
             "Campos 'private_key' e 'client_email' são obrigatórios.")
 
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-    model = os.environ.get("VERTEX_MODEL", "gemini-2.5-pro")
+    model = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash")
 
     return {
         "project": project,
