@@ -28,7 +28,7 @@ def _load_vertex_cfg_from_disk():
             "Campos 'private_key' e 'client_email' são obrigatórios.")
 
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-    model = os.environ.get("VERTEX_MODEL", "gemini-2.5-flash")
+    model = os.environ.get("VERTEX_MODEL", "gemini-2.5-pro")
 
     return {
         "project": project,
@@ -182,7 +182,7 @@ def summarize_chat_history(messages, cfg, *, max_phrases: int = 2) -> str:
     generation_config = {
         "temperature": 0.2,
         "top_p": 0.9,
-        "max_output_tokens": 256,
+        "max_output_tokens": 4096,
     }
 
     response = model.generate_content(
@@ -250,7 +250,7 @@ def generate_chat_evaluation(
     generation_config = {
         "temperature": 0.1,
         "top_p": 0.9,
-        "max_output_tokens": 8192,
+        "max_output_tokens": 32768,
     }
 
     response = model.generate_content(
