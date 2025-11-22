@@ -214,7 +214,7 @@ def build_studio_page(
                         temperature = gr.Slider(0.0, 2.0, value=0.7, step=0.1, label="Temperatura")
                         topP = gr.Slider(0.0, 1.0, value=0.95, step=0.01, label="Top-p")
                         topK = gr.Slider(0, 50, value=40, step=1, label="Top-k")
-                        maxTokens = gr.Slider(64, 4096, value=1024, step=32, label="Max tokens (saída)")
+                        maxTokens = gr.Slider(64, 16384, value=1024, step=32, label="Max tokens (saída)")
                         applyAdv = gr.Button("Aplicar opções avançadas")
                         gr.Markdown(
                             "**Notas sobre os hiperparâmetros**\n"

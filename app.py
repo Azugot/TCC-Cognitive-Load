@@ -93,7 +93,7 @@ def build_app() -> gr.Blocks:
         )
         docs_state = gr.State({})
         script_state = gr.State("Você é um assistente pedagógico. Aguarde configuração do usuário.")
-        adv_state = gr.State({"temperature": 0.7, "top_p": 0.95, "top_k": 40, "max_tokens": 1024})
+        adv_state = gr.State({"temperature": 0.7, "top_p": 0.95, "top_k": 40, "max_tokens": 4096})
         classrooms_state = gr.State([])
         subjects_state = gr.State({})
         chats_state = gr.State({})

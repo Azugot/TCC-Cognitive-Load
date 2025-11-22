@@ -60,12 +60,17 @@ def build_auth_views(*, blocks: gr.Blocks, vertex_cfg: Dict[str, Any], vertex_er
     header_msg = "### 👋 Bem-vindo! Faça login para continuar."
     #Message to those utilizing the plataform
     aviso_msg = """# Aviso aos Usuários:
-                A todos utilizando a plataforma, agradeço imensamente por utilizarem a plataforma!
+                A todos utilizando a plataforma, agradeço imensamente por utilizarem o projeto!
                 
-                **Anuncio que hoje, dia 19/11/2025, às 20h, enviarei um e-mail a todos que utilizaram a plataforma**, contendo um breve questionário sobre sua experiência com o chat, marcando o fim do período de coleta de dados.
-                **Ficarei aguardando respostas até sexta-feira, dia 21/11/2025 à noite, por volta das 20h.**
+                **No link abaixo eu criei um breve questionário sobre sua experiência com a plataforma, e gostaria que respondessem assim que terminarem de utilizar o chat.**
                 
-                Os pontos extras serão distribuídos para aqueles que utilizaram o chat **e responderam ao questionário**.
+                "https://forms.gle/gfHCMKigWojFUpcU9"
+                
+                **Ficarei aguardando respostas até segunda-feira, dia 24/11/2025 à noite, por volta das 20h** marcando o fim do período de coleta de dados.
+                
+                ## NÃO HAVERÁ EXTENSÃO DO PERÍODO DE COLETA DE DADOS, E RESPOSTAS RECEBIDAS APÓS SERÃO DESCONSIDERADAS.
+                
+                Os pontos extras serão distribuídos para aqueles que utilizaram o chat por no mínimo 30 minutos **e responderam ao questionário**.
                 
                 Para aqueles que gostaram da experiência, informo que **vou alterar o modelo da IA para o Gemini Pro** na noite de hoje, que será mantido **até os créditos da GCP acabarem**, ou até o dia **02/12/2025** quando o free trial da Vertex encerra.
                 
