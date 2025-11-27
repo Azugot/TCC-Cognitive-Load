@@ -1123,7 +1123,7 @@ def build_student_views(
                 stProvider = gr.Markdown(
                     "**Chat da Sala** — usa seu tema, subtemas e interesses.")
                 stChatbot = gr.Chatbot(
-                    label="Chat (Sala)", type="messages", height=420)
+                    label="Chat (Sala)", height=420)
                 #with gr.Row():
                 #    stClear = gr.Button("Limpar chat")
                 with gr.Row():
