@@ -304,8 +304,9 @@ def admin_load_classroom_chats(auth, classrooms, classroom_id, selected_ids=None
         )
 
     choices = _classroom_dropdown_choices(classrooms)
-    valid_ids = [cid for _, cid in choices]
-    target_id = classroom_id if classroom_id in valid_ids else (valid_ids[0] if valid_ids else None)
+    valid_ids = [str(cid) for _, cid in choices]
+    normalized_id = str(classroom_id) if classroom_id not in (None, "") else None
+    target_id = normalized_id if normalized_id in valid_ids else normalized_id
 
     try:
         chats = list_all_chats(
@@ -340,10 +341,15 @@ def admin_load_classroom_chats(auth, classrooms, classroom_id, selected_ids=None
         subjects = ", ".join(chat.get("subjects") or []) or (chat.get("subject_free_text") or "—")
         options.append((f"{student} — {label} — {subjects}", chat.get("id")))
 
-    message = f"OK: {len(filtered)} chat(s) encontrados para a sala." if filtered else "Info: Nenhum chat encontrado para a sala."
+    if not target_id:
+        message = "Info: Selecione uma sala para carregar os chats."
+    else:
+        message = (
+            f"OK: {len(filtered)} chat(s) encontrados para a sala." if filtered else "Info: Nenhum chat encontrado para a sala."
+        )
 
-    selected_ids = set(selected_ids or [])
-    valid_selected = [val for _, val in options if val in selected_ids]
+    selected_ids = {str(val) for val in (selected_ids or [])}
+    valid_selected = [val for _, val in options if str(val) in selected_ids]
 
     return (
         gr.update(choices=choices, value=target_id),
