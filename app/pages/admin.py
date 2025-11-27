@@ -293,6 +293,18 @@ def _group_chats_by_student_md(chats: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _spinner_html(message: str) -> str:
+    return f"""
+<div style='display:flex;align-items:center;gap:8px;'>
+  <div style='width:18px;height:18px;border:3px solid #d1d5db;border-top-color:#4f46e5;border-radius:9999px;animation:spin 0.8s linear infinite'></div>
+  <div>{message}</div>
+</div>
+<style>
+@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+</style>
+"""
+
+
 def admin_load_classroom_chats(auth, classrooms, classroom_id, selected_ids=None):
     if not _is_admin(auth):
         return (
@@ -489,16 +501,32 @@ def admin_vertex_summarize_chats(
     max_output_tokens,
 ):
     if not _is_admin(auth):
-        return gr.update(visible=False), "Warning: Apenas administradores podem usar o Vertex nesta área."
+        return (
+            gr.update(visible=False),
+            "Warning: Apenas administradores podem usar o Vertex nesta área.",
+            gr.update(value="", visible=False),
+        )
 
     if _vertex_err:
-        return gr.update(visible=False), f"Warning: Vertex indisponível: {_vertex_err}"
+        return (
+            gr.update(visible=False),
+            f"Warning: Vertex indisponível: {_vertex_err}",
+            gr.update(value="", visible=False),
+        )
     if not VERTEX_CFG:
-        return gr.update(visible=False), "Warning: Configure o Vertex AI no arquivo de credenciais."
+        return (
+            gr.update(visible=False),
+            "Warning: Configure o Vertex AI no arquivo de credenciais.",
+            gr.update(value="", visible=False),
+        )
 
     entries = [chat for chat in (chats_state or []) if chat.get("id") in (selected_ids or [])]
     if not entries:
-        return gr.update(visible=False), "Warning: Selecione ao menos um chat para enviar ao Vertex."
+        return (
+            gr.update(visible=False),
+            "Warning: Selecione ao menos um chat para enviar ao Vertex.",
+            gr.update(value="", visible=False),
+        )
 
     cfg = dict(VERTEX_CFG)
     if model_name and isinstance(model_name, str):
@@ -507,7 +535,11 @@ def admin_vertex_summarize_chats(
     try:
         model = _vertex_init_or_raise(cfg)
     except Exception as exc:  # pragma: no cover - depende de dependências externas
-        return gr.update(visible=False), f"ERROR: Não foi possível inicializar o Vertex: {exc}"
+        return (
+            gr.update(visible=False),
+            f"ERROR: Não foi possível inicializar o Vertex: {exc}",
+            gr.update(value="", visible=False),
+        )
 
     contexts = []
     for chat in entries:
@@ -544,11 +576,19 @@ def admin_vertex_summarize_chats(
         response = model.generate_content(prompt, generation_config=gen_cfg or None)
         text = getattr(response, "text", None) or str(response)
     except Exception as exc:  # pragma: no cover - depende de serviço externo
-        return gr.update(visible=False), f"ERROR: Erro ao chamar o Vertex: {exc}"
+        return (
+            gr.update(visible=False),
+            f"ERROR: Erro ao chamar o Vertex: {exc}",
+            gr.update(value="", visible=False),
+        )
 
     footer = f"Modelo: {cfg.get('model')} — Chats: {len(entries)}"
     pdf_path = _write_vertex_pdf(text, footer=footer)
-    return gr.update(value=pdf_path, visible=True), "OK: Resposta gerada pelo Vertex."
+    return (
+        gr.update(value=pdf_path, visible=True),
+        "OK: Resposta gerada pelo Vertex.",
+        gr.update(value=text, visible=True),
+    )
 
 
 def _render_eval_md(chat):
@@ -1394,9 +1434,10 @@ def build_admin_views(
         adChatListing = gr.Markdown()
         adChatSelector = gr.CheckboxGroup(label="Chats disponíveis", choices=[], value=[])
         adChatNotice = gr.Markdown()
+        adLoadingIndicator = gr.HTML("", visible=False)
         with gr.Row():
             btnZipPdfs = gr.Button("📦 Preparar ZIP de PDFs", variant="secondary")
-            adZipDownload = gr.DownloadButton("⬇️ Baixar ZIP", visible=False)
+            adZipDownload = gr.DownloadButton("⬇️ Baixar ZIP", visible=False, file_name="chats.zip")
         with gr.Accordion("Gerar resposta via Vertex", open=False):
             adVertexInstructions = gr.Textbox(
                 label="Instruções para o Vertex",
@@ -1416,7 +1457,10 @@ def build_admin_views(
                 adVertexMaxTokens = gr.Slider(label="Máx. tokens de saída", minimum=256, maximum=8192, value=2048, step=64)
             with gr.Row():
                 btnVertexRun = gr.Button("✨ Enviar ao Vertex", variant="primary")
-                adVertexDownload = gr.DownloadButton("⬇️ Baixar resposta", visible=False)
+                adVertexDownload = gr.DownloadButton(
+                    "⬇️ Baixar resposta", visible=False, file_name="vertex_resposta.pdf"
+                )
+            adVertexPreview = gr.Markdown("", visible=False, elem_classes=["history-box"])
         adminPgBack = gr.Button("← Voltar à Home do Admin")
 
     with gr.Column(visible=False) as viewClassrooms:
@@ -1841,12 +1885,21 @@ def build_admin_views(
     )
 
     btnZipPdfs.click(
+        lambda: gr.update(value=_spinner_html("Gerando ZIP..."), visible=True),
+        outputs=[adLoadingIndicator],
+    ).then(
         admin_prepare_chat_zip,
         inputs=[adChatSelector, admin_classroom_chats_state, auth_state],
         outputs=[adZipDownload, adChatNotice],
+    ).then(
+        lambda: gr.update(visible=False),
+        outputs=[adLoadingIndicator],
     )
 
     btnVertexRun.click(
+        lambda: gr.update(value=_spinner_html("Enviando ao Vertex..."), visible=True),
+        outputs=[adLoadingIndicator],
+    ).then(
         admin_vertex_summarize_chats,
         inputs=[
             adChatSelector,
@@ -1859,7 +1912,10 @@ def build_admin_views(
             adVertexTopK,
             adVertexMaxTokens,
         ],
-        outputs=[adVertexDownload, adChatNotice],
+        outputs=[adVertexDownload, adChatNotice, adVertexPreview],
+    ).then(
+        lambda: gr.update(visible=False),
+        outputs=[adLoadingIndicator],
     )
 
     histBack.click(
