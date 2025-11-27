@@ -293,7 +293,7 @@ def _group_chats_by_student_md(chats: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def admin_load_classroom_chats(auth, classrooms, classroom_id):
+def admin_load_classroom_chats(auth, classrooms, classroom_id, selected_ids=None):
     if not _is_admin(auth):
         return (
             gr.update(),
@@ -342,11 +342,14 @@ def admin_load_classroom_chats(auth, classrooms, classroom_id):
 
     message = f"OK: {len(filtered)} chat(s) encontrados para a sala." if filtered else "Info: Nenhum chat encontrado para a sala."
 
+    selected_ids = set(selected_ids or [])
+    valid_selected = [val for _, val in options if val in selected_ids]
+
     return (
         gr.update(choices=choices, value=target_id),
         gr.update(value=listing_md),
         filtered,
-        gr.update(choices=options, value=[val for _, val in options]),
+        gr.update(choices=options, value=valid_selected),
         message,
     )
 
@@ -1573,7 +1576,13 @@ def build_admin_views(
 
     navAdmin.click(
         admin_load_classroom_chats,
-        inputs=[auth_state, classrooms_state, adClassroomDropdown],
+        inputs=[auth_state, classrooms_state, adClassroomDropdown, adChatSelector],
+        outputs=[adClassroomDropdown, adChatListing, admin_classroom_chats_state, adChatSelector, adClassroomInfo],
+    )
+
+    adClassroomDropdown.change(
+        admin_load_classroom_chats,
+        inputs=[auth_state, classrooms_state, adClassroomDropdown, adChatSelector],
         outputs=[adClassroomDropdown, adChatListing, admin_classroom_chats_state, adChatSelector, adClassroomInfo],
     )
 
@@ -1817,7 +1826,7 @@ def build_admin_views(
 
     adReloadChats.click(
         admin_load_classroom_chats,
-        inputs=[auth_state, classrooms_state, adClassroomDropdown],
+        inputs=[auth_state, classrooms_state, adClassroomDropdown, adChatSelector],
         outputs=[adClassroomDropdown, adChatListing, admin_classroom_chats_state, adChatSelector, adClassroomInfo],
     )
 
