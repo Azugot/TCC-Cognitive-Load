@@ -9,6 +9,44 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 
 
+def create_text_pdf(title: str, content: str) -> str:
+    """Generate a simple PDF with a title and body text."""
+
+    outDir = "./output_pdfs"
+    os.makedirs(outDir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    outPath = os.path.join(outDir, f"vertex_response_{timestamp}.pdf")
+
+    doc = SimpleDocTemplate(outPath, pagesize=letter, leftMargin=36,
+                            rightMargin=36, topMargin=36, bottomMargin=36)
+    styles = getSampleStyleSheet()
+    body = []
+
+    heading = ParagraphStyle("heading", parent=styles["Heading2"], spaceAfter=12)
+    text_style = ParagraphStyle(
+        "text",
+        parent=styles["Normal"],
+        fontSize=11,
+        leading=14,
+        spaceBefore=6,
+    )
+
+    body.append(Paragraph(title or "Resposta do Vertex", heading))
+    body.append(Paragraph(
+        f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+        styles["Italic"],
+    ))
+    body.append(Spacer(1, 0.2 * inch))
+
+    normalized = content or "(sem conteúdo retornado)"
+    normalized = normalized.replace("\n", "<br/>")
+    body.append(Paragraph(normalized, text_style))
+
+    doc.build(body)
+    return outPath
+
+
 def extractPdfText(filePath: str) -> str:
     textParts = []
     with fitz.open(filePath) as doc:
