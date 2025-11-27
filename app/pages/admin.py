@@ -294,13 +294,14 @@ def _group_chats_by_student_md(chats: List[Dict[str, Any]]) -> str:
 
 
 def _spinner_html(message: str) -> str:
+    # Escape CSS braces inside the f-string to avoid formatting errors.
     return f"""
 <div style='display:flex;align-items:center;gap:8px;'>
   <div style='width:18px;height:18px;border:3px solid #d1d5db;border-top-color:#4f46e5;border-radius:9999px;animation:spin 0.8s linear infinite'></div>
   <div>{message}</div>
 </div>
 <style>
-@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+@keyframes spin {{ from {{ transform: rotate(0deg);}} to {{ transform: rotate(360deg);}} }}
 </style>
 """
 
@@ -322,7 +323,7 @@ def admin_load_classroom_chats(auth, classrooms, classroom_id, selected_ids=None
     if target_id is None and valid_ids:
         # Keep the currently selected classroom if it's valid; otherwise, fall back to the
         # first available option so the chat list is never empty when classrooms exist.
-        target_id = valid_ids[0]
+        target_id = valid_ids[4]
 
     try:
         chats = list_all_chats(
@@ -720,7 +721,7 @@ def _load_domain_state(current_classrooms=None, current_subjects=None):
             entry = {
                 "id": doc_id,
                 "classroom_id": doc.get("classroom_id") or item.get("id"),
-                "filename": doc.get("file_name") or doc.get("filename") or "",
+                "filename": doc.get("value") or doc.get("filename") or "",
                 "storage_path": doc.get("storage_path") or "",
                 "description": (doc.get("description") or "").strip(),
                 "uploaded_by": doc.get("uploaded_by"),
@@ -1437,7 +1438,7 @@ def build_admin_views(
         adLoadingIndicator = gr.HTML("", visible=False)
         with gr.Row():
             btnZipPdfs = gr.Button("📦 Preparar ZIP de PDFs", variant="secondary")
-            adZipDownload = gr.DownloadButton("⬇️ Baixar ZIP", visible=False, file_name="chats.zip")
+            adZipDownload = gr.DownloadButton("⬇️ Baixar ZIP", visible=False, value="chats_pdfs.zip")
         with gr.Accordion("Gerar resposta via Vertex", open=False):
             adVertexInstructions = gr.Textbox(
                 label="Instruções para o Vertex",
@@ -1454,12 +1455,10 @@ def build_admin_views(
             with gr.Row():
                 adVertexTopP = gr.Slider(label="Top P", minimum=0.0, maximum=1.0, value=0.95, step=0.01)
                 adVertexTopK = gr.Slider(label="Top K", minimum=1, maximum=100, value=40, step=1)
-                adVertexMaxTokens = gr.Slider(label="Máx. tokens de saída", minimum=256, maximum=8192, value=2048, step=64)
+                adVertexMaxTokens = gr.Slider(label="Máx. tokens de saída", minimum=32768, maximum=81920, value=2048, step=64)
             with gr.Row():
                 btnVertexRun = gr.Button("✨ Enviar ao Vertex", variant="primary")
-                adVertexDownload = gr.DownloadButton(
-                    "⬇️ Baixar resposta", visible=False, file_name="vertex_resposta.pdf"
-                )
+                adVertexDownload = gr.DownloadButton("⬇️ Baixar resposta", visible=False, value="vertex_response.pdf")
             adVertexPreview = gr.Markdown("", visible=False, elem_classes=["history-box"])
         adminPgBack = gr.Button("← Voltar à Home do Admin")
 

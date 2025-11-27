@@ -235,7 +235,7 @@ def build_studio_page(
                     f"**Provedor:** `vertex`  |  **Projeto:** `{(VERTEX_CFG or {}).get('project', '?')}`"
                     f"  |  **Modelo:** `{(VERTEX_CFG or {}).get('model', '?')}`"
                 )
-                chatbot = gr.Chatbot(label="Chat", type="messages", height=420)
+                chatbot = gr.Chatbot(label="Chat", height=420)
                 with gr.Row():
                     clearBtn = gr.Button("Limpar chat")
                 backToConfigBtn = gr.Button("⬅️ Voltar para customização")

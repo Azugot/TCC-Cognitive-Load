@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gradio as gr
+from gradio import themes
 
 from services.vertex_client import VERTEX_CFG, _vertex_err
 
@@ -80,7 +81,7 @@ def _logout_cleanup():
 
 
 def build_app() -> gr.Blocks:
-    with gr.Blocks(theme=gr.themes.Default(), fill_height=True, css=APP_CSS) as demo:
+    with gr.Blocks(fill_height=True) as demo:
         auth_state = gr.State(
             {
                 "isAuth": False,
