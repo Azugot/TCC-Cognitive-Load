@@ -1,6 +1,10 @@
 """Admin area utilities and Gradio view builders."""
 
 from __future__ import annotations
+import os
+import re
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -14,6 +18,7 @@ from services.supabase_client import (
     delete_classroom_record,
     fetch_classroom_domain,
     list_all_chats,
+    download_file_from_bucket,
     remove_classroom_student,
     remove_classroom_teacher,
     set_classroom_theme_config,
@@ -31,6 +36,7 @@ from app.config import (
     SUPABASE_URL,
     SUPABASE_USERS_TABLE,
 )
+from services.docs import create_text_pdf, extractPdfText
 from app.utils import (
     _auth_matches_classroom_owner,
     _auth_matches_classroom_teacher,
@@ -47,10 +53,17 @@ from app.utils import (
 from app.pages.history_shared import (
     _format_timestamp,
     _history_table_data,
+    _subjects_label,
     append_chat_comment,
     generate_auto_evaluation,
     load_chat_entry,
     prepare_download,
+)
+from services.vertex_client import (
+    VERTEX_CFG,
+    _collect_response_text,
+    _vertex_err,
+    _vertex_init_or_raise,
 )
 
 
@@ -65,6 +78,46 @@ class AdminViews:
     btn_logout: gr.Button
     btn_admin_as_student: gr.Button
     btn_admin_list_students: gr.Button
+
+
+def _safe_dirname(label: str, fallback: str = "item") -> str:
+    base = label or fallback
+    normalized = re.sub(r"[^\w\-]+", "_", base, flags=re.UNICODE).strip("_")
+    return normalized or fallback
+
+
+def _render_student_chat_listing(chats: List[Dict[str, Any]]) -> str:
+    if not chats:
+        return "Info: Nenhum chat encontrado para a sala selecionada."
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for chat in chats:
+        student = chat.get("student_name") or chat.get("student_login") or "Aluno"
+        groups.setdefault(student, []).append(chat)
+
+    lines = ["### Chats agrupados por aluno"]
+    for student, entries in sorted(groups.items(), key=lambda item: item[0].lower()):
+        lines.append(f"\n#### {student}")
+        for entry in entries:
+            subjects = _subjects_label(entry)
+            started = _format_timestamp(entry.get("started_at"))
+            auto_eval = "✅" if entry.get("auto_evaluation") else "—"
+            lines.append(
+                f"- `{entry.get('id')}` — {subjects} — Iniciado: {started} — Avaliação automática: {auto_eval}"
+            )
+
+    return "\n".join(lines)
+
+
+def _admin_classrooms_dropdown(classrooms, current_value=None):
+    choices = [
+        (c.get("name") or c.get("id") or "Sala", c.get("id"))
+        for c in (classrooms or [])
+        if c.get("id")
+    ]
+    valid = [value for _, value in choices]
+    value = current_value if current_value in valid else (valid[0] if valid else None)
+    return gr.update(choices=choices, value=value)
 
 
 def _render_classrooms_md(classrooms: Iterable[Dict[str, Any]]):
@@ -247,6 +300,225 @@ def admin_history_prepare_download(download_path):
         return path
     gr.Warning("Warning: Nenhum arquivo disponível para download.")
     return None
+
+
+def _download_chat_pdf(chat: Dict[str, Any]) -> Optional[str]:
+    bucket = chat.get("storage_bucket")
+    path = chat.get("storage_path")
+    if not bucket or not path:
+        return None
+
+    pdf_bytes = download_file_from_bucket(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY,
+        bucket=bucket,
+        storage_path=path,
+    )
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        return tmp.name
+
+
+def admin_classroom_chats_refresh(auth, classroom_id):
+    if not _is_admin(auth):
+        return [], gr.update(value="Warning: Apenas administradores podem acessar esta área."), gr.update(choices=[], value=[]), ""
+
+    classroom_id = (classroom_id or "").strip()
+    if not classroom_id:
+        return [], gr.update(value="Info: Escolha uma sala para listar os chats."), gr.update(choices=[], value=[]), ""
+
+    try:
+        chats = list_all_chats(
+            SUPABASE_URL,
+            SUPABASE_SERVICE_ROLE_KEY,
+            users_table=SUPABASE_USERS_TABLE,
+        )
+    except SupabaseConfigurationError:
+        md = "Warning: Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY para consultar os chats."
+        return [], gr.update(value=md), gr.update(choices=[], value=[]), ""
+    except SupabaseOperationError as err:
+        return [], gr.update(value=f"ERROR: {err}"), gr.update(choices=[], value=[]), ""
+
+    filtered = [chat for chat in chats if str(chat.get("classroom_id")) == classroom_id]
+    listing_md = _render_student_chat_listing(filtered)
+
+    choices: List[Tuple[str, str]] = []
+    for chat in filtered:
+        chat_id = chat.get("id")
+        if not chat_id:
+            continue
+        student = chat.get("student_name") or chat.get("student_login") or "Aluno"
+        subjects = _subjects_label(chat)
+        started = _format_timestamp(chat.get("started_at"))
+        choices.append((f"{student} — {subjects} — {started}", chat_id))
+
+    info = f"OK: {len(filtered)} chat(s) encontrados para a sala." if filtered else "Info: Nenhum chat localizado para a sala."
+    return filtered, gr.update(value=listing_md), gr.update(choices=choices, value=[]), info
+
+
+def admin_download_selected_chats(selected_ids, chats_state, current_zip_path):
+    if current_zip_path and os.path.exists(current_zip_path):
+        try:
+            os.remove(current_zip_path)
+        except OSError:
+            pass
+
+    chat_map = {entry.get("id"): entry for entry in chats_state or []}
+    targets = [chat_map[cid] for cid in (selected_ids or []) if cid in chat_map]
+    if not targets:
+        return gr.update(value=None, visible=False), "Warning: Selecione ao menos um chat para baixar.", None
+
+    written = 0
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for chat in targets:
+            try:
+                pdf_path = _download_chat_pdf(chat)
+            except SupabaseConfigurationError:
+                return gr.update(value=None, visible=False), "Warning: Configure o Supabase Storage para baixar PDFs.", None
+            except SupabaseOperationError as err:
+                return gr.update(value=None, visible=False), f"ERROR: Falha ao baixar PDF: {err}", None
+
+            if not pdf_path:
+                continue
+
+            student = _safe_dirname(
+                chat.get("student_name") or chat.get("student_login") or "Aluno", fallback="aluno"
+            )
+            classroom = _safe_dirname(chat.get("classroom_name") or chat.get("classroom_id") or "sala")
+            dest_dir = os.path.join(tmpdir, f"{classroom}_{student}")
+            os.makedirs(dest_dir, exist_ok=True)
+
+            filename = os.path.basename(chat.get("storage_path") or "") or f"{chat.get('id')}.pdf"
+            dest_path = os.path.join(dest_dir, filename)
+            try:
+                os.replace(pdf_path, dest_path)
+            except OSError:
+                continue
+            written += 1
+
+        if written == 0:
+            return gr.update(value=None, visible=False), "Warning: Nenhum PDF disponível para os chats selecionados.", None
+
+        fd, zip_path = tempfile.mkstemp(suffix=".zip")
+        os.close(fd)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(tmpdir):
+                for file in files:
+                    full = os.path.join(root, file)
+                    rel = os.path.relpath(full, tmpdir)
+                    zf.write(full, rel)
+
+    return (
+        gr.update(value=zip_path, visible=True),
+        f"OK: {written} PDF(s) preparados para download.",
+        zip_path,
+    )
+
+
+def _chat_context_block(chat: Dict[str, Any], transcript: str) -> str:
+    subjects = ", ".join(chat.get("subjects") or []) or chat.get("subject_free_text") or "—"
+    goal = chat.get("student_goal") or "—"
+    interest = chat.get("student_interest") or "—"
+    auto_eval = chat.get("auto_evaluation") or "—"
+    started = _format_timestamp(chat.get("started_at"))
+    student = chat.get("student_name") or chat.get("student_login") or "Aluno"
+    classroom = chat.get("classroom_name") or chat.get("classroom_id") or "Sala"
+    transcript_excerpt = (transcript or "").strip()
+    if len(transcript_excerpt) > 4000:
+        transcript_excerpt = transcript_excerpt[:4000].rstrip() + "…"
+
+    return (
+        f"Chat ID: {chat.get('id')}\n"
+        f"Aluno: {student}\nSala: {classroom}\nIniciado em: {started}\n"
+        f"Assuntos selecionados: {subjects}\n"
+        f"Objetivo do aluno: {goal}\nInteresses do aluno: {interest}\n"
+        f"Avaliação automática existente: {auto_eval or 'Nenhuma'}\n"
+        f"Resumo: {chat.get('summary') or chat.get('summary_preview') or '—'}\n"
+        f"Transcrição extraída (trecho):\n{transcript_excerpt}"
+    )
+
+
+def admin_generate_vertex_pdf(
+    selected_ids,
+    chats_state,
+    instructions,
+    model_name,
+    temperature,
+    top_p,
+    max_tokens,
+    current_path,
+):
+    if current_path and os.path.exists(current_path):
+        try:
+            os.remove(current_path)
+        except OSError:
+            pass
+
+    if _vertex_err:
+        return gr.update(value=None, visible=False), f"Warning: { _vertex_err }", None
+
+    chat_map = {entry.get("id"): entry for entry in chats_state or []}
+    targets = [chat_map[cid] for cid in (selected_ids or []) if cid in chat_map]
+    if not targets:
+        return gr.update(value=None, visible=False), "Warning: Selecione ao menos um chat para enviar ao Vertex.", None
+
+    cfg = dict(VERTEX_CFG or {})
+    if model_name and isinstance(model_name, str):
+        cfg["model"] = model_name.strip() or cfg.get("model")
+
+    try:
+        model = _vertex_init_or_raise(cfg)
+    except Exception as exc:  # pragma: no cover - depende de libs externas
+        return gr.update(value=None, visible=False), f"ERROR: {exc}", None
+
+    temperature = float(temperature) if temperature is not None else 0.7
+    top_p = float(top_p) if top_p is not None else 0.95
+    max_tokens = int(max_tokens) if max_tokens else 2048
+    generation_config = {
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_output_tokens": max_tokens,
+    }
+
+    context_blocks: List[str] = []
+    for chat in targets:
+        try:
+            pdf_path = _download_chat_pdf(chat)
+        except SupabaseConfigurationError:
+            return gr.update(value=None, visible=False), "Warning: Configure o Supabase Storage para baixar PDFs.", None
+        except SupabaseOperationError as err:
+            return gr.update(value=None, visible=False), f"ERROR: Falha ao baixar PDF: {err}", None
+
+        transcript = ""
+        if pdf_path and os.path.exists(pdf_path):
+            try:
+                transcript = extractPdfText(pdf_path)
+            except Exception:
+                transcript = ""
+            try:
+                os.remove(pdf_path)
+            except OSError:
+                pass
+
+        context_blocks.append(_chat_context_block(chat, transcript))
+
+    compiled_context = "\n\n".join(context_blocks)
+    prompt = (instructions or "Analise os chats fornecidos e gere um relatório consolidado.").strip()
+    prompt = f"{prompt}\n\nDados dos chats:\n{compiled_context}"
+
+    try:
+        response = model.generate_content(prompt, generation_config=generation_config)
+        text = _collect_response_text(response)
+    except Exception as exc:  # pragma: no cover - depende de libs externas
+        return gr.update(value=None, visible=False), f"ERROR: Falha ao gerar resposta no Vertex: {exc}", None
+
+    pdf_path = create_text_pdf("Relatório consolidado dos chats", text)
+    return (
+        gr.update(value=pdf_path, visible=True),
+        "OK: Resposta do Vertex gerada. Faça o download do PDF.",
+        pdf_path,
+    )
 
 
 def _render_eval_md(chat):
@@ -1060,6 +1332,9 @@ def build_admin_views(
     admin_history_selected = gr.State(None)
     admin_history_transcript = gr.State("")
     admin_download_path = gr.State(None)
+    admin_classroom_chats_state = gr.State([])
+    admin_zip_download = gr.State(None)
+    admin_vertex_download = gr.State(None)
 
     with gr.Column(visible=False) as viewHomeAdmin:
         adminGreet = gr.Markdown("## 🧭 Home do Admin")
@@ -1080,11 +1355,44 @@ def build_admin_views(
                 btnAdminListStudents = gr.Button("👥 Ver alunos cadastrados")
 
     with gr.Column(visible=False) as viewAdminPg:
-        gr.Markdown("## 🛠️ Administração (Placeholder)")
+        gr.Markdown("## 🛠️ Administração")
         gr.Markdown(
-            "- Gerenciar usuários/roles (futuro)\n"
-            "- Parâmetros globais do sistema (futuro)\n"
-            "- Logs/telemetria (futuro)\n"
+            "Listagem de chats por sala, agrupados por aluno, com download em lote e envio ao Vertex."
+        )
+        with gr.Row():
+            adminClassSelector = gr.Dropdown(
+                choices=[], label="Sala", value=None, allow_custom_value=True
+            )
+            adminRefreshChats = gr.Button("Recarregar chats")
+        adminClassInfo = gr.Markdown("Info: Escolha uma sala para começar.")
+        adminClassListing = gr.Markdown("")
+        adminClassChatChoices = gr.CheckboxGroup(
+            choices=[], label="Selecione os chats", value=[]
+        )
+        adminDownloadStatus = gr.Markdown("")
+        adminZipButton = gr.DownloadButton(
+            "📦 Baixar PDFs selecionados (zip)", visible=False, variant="secondary"
+        )
+        gr.Markdown("---")
+        gr.Markdown("### Enviar chats selecionados para o Vertex")
+        adminVertexInstructions = gr.Textbox(
+            label="Instruções personalizadas",
+            lines=4,
+            value=(
+                "Analise os chats fornecidos, considerando objetivos e interesses do aluno. "
+                "Devolva um relatório único com pontos fortes, sugestões e referências aos assuntos."
+            ),
+        )
+        with gr.Row():
+            adminVertexModel = gr.Textbox(
+                label="Modelo Vertex", value=(VERTEX_CFG or {}).get("model", "gemini-2.5-flash")
+            )
+            adminVertexTemp = gr.Slider(0, 1, value=0.7, step=0.05, label="Temperatura")
+            adminVertexTopP = gr.Slider(0, 1, value=0.9, step=0.05, label="Top P")
+            adminVertexMaxTokens = gr.Slider(256, 8192, value=2048, step=64, label="Máx. tokens")
+        adminVertexStatus = gr.Markdown("")
+        adminVertexDownloadBtn = gr.DownloadButton(
+            "📄 Baixar PDF gerado pelo Vertex", visible=False, variant="secondary"
         )
         with gr.Row():
             adminPgBack = gr.Button("← Voltar à Home do Admin")
@@ -1252,6 +1560,20 @@ def build_admin_views(
     navAdmin.click(
         lambda: _go_admin("admin"),
         outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    ).then(
+        _admin_classrooms_dropdown,
+        inputs=[classrooms_state, adminClassSelector],
+        outputs=adminClassSelector,
+    ).then(
+        lambda: (
+            gr.update(value="Info: Escolha uma sala para começar."),
+            gr.update(value=""),
+            gr.update(choices=[], value=[]),
+            gr.update(value=None, visible=False),
+            gr.update(value=None, visible=False),
+        ),
+        inputs=None,
+        outputs=[adminClassInfo, adminClassListing, adminClassChatChoices, adminZipButton, adminVertexDownloadBtn],
     )
 
     adminPgBack.click(
@@ -1281,6 +1603,10 @@ def build_admin_views(
         admin_history_dropdown,
         inputs=[classrooms_state, adHistoryClass],
         outputs=adHistoryClass,
+    ).then(
+        _admin_classrooms_dropdown,
+        inputs=[classrooms_state, adminClassSelector],
+        outputs=adminClassSelector,
     )
 
     btnRefreshCls.click(
@@ -1295,6 +1621,10 @@ def build_admin_views(
         admin_history_dropdown,
         inputs=[classrooms_state, adHistoryClass],
         outputs=adHistoryClass,
+    ).then(
+        _admin_classrooms_dropdown,
+        inputs=[classrooms_state, adminClassSelector],
+        outputs=adminClassSelector,
     )
 
     clsSelect.change(
@@ -1319,6 +1649,10 @@ def build_admin_views(
         admin_history_dropdown,
         inputs=[classrooms_state, adHistoryClass],
         outputs=adHistoryClass,
+    ).then(
+        _admin_classrooms_dropdown,
+        inputs=[classrooms_state, adminClassSelector],
+        outputs=adminClassSelector,
     )
 
     btnDeleteCls.click(
@@ -1333,6 +1667,10 @@ def build_admin_views(
         admin_history_dropdown,
         inputs=[classrooms_state, adHistoryClass],
         outputs=adHistoryClass,
+    ).then(
+        _admin_classrooms_dropdown,
+        inputs=[classrooms_state, adminClassSelector],
+        outputs=adminClassSelector,
     )
 
     membClass.change(
@@ -1374,6 +1712,61 @@ def build_admin_views(
     clsBackAdminHome.click(
         lambda: _go_admin("home"),
         outputs=[admin_nav_state, viewHomeAdmin, viewClassrooms, viewHistory, viewEvaluate, viewProgress, viewAdminPg],
+    )
+
+    adminRefreshChats.click(
+        admin_classroom_chats_refresh,
+        inputs=[auth_state, adminClassSelector],
+        outputs=[admin_classroom_chats_state, adminClassListing, adminClassChatChoices, adminClassInfo],
+    ).then(
+        lambda: (
+            gr.update(value=None, visible=False),
+            "",
+            None,
+            gr.update(value=None, visible=False),
+            "",
+            None,
+        ),
+        inputs=None,
+        outputs=[adminZipButton, adminDownloadStatus, admin_zip_download, adminVertexDownloadBtn, adminVertexStatus, admin_vertex_download],
+    )
+
+    adminClassSelector.change(
+        admin_classroom_chats_refresh,
+        inputs=[auth_state, adminClassSelector],
+        outputs=[admin_classroom_chats_state, adminClassListing, adminClassChatChoices, adminClassInfo],
+    ).then(
+        lambda: (
+            gr.update(value=None, visible=False),
+            "",
+            None,
+            gr.update(value=None, visible=False),
+            "",
+            None,
+        ),
+        inputs=None,
+        outputs=[adminZipButton, adminDownloadStatus, admin_zip_download, adminVertexDownloadBtn, adminVertexStatus, admin_vertex_download],
+    )
+
+    adminZipButton.click(
+        admin_download_selected_chats,
+        inputs=[adminClassChatChoices, admin_classroom_chats_state, admin_zip_download],
+        outputs=[adminZipButton, adminDownloadStatus, admin_zip_download],
+    )
+
+    adminVertexDownloadBtn.click(
+        admin_generate_vertex_pdf,
+        inputs=[
+            adminClassChatChoices,
+            admin_classroom_chats_state,
+            adminVertexInstructions,
+            adminVertexModel,
+            adminVertexTemp,
+            adminVertexTopP,
+            adminVertexMaxTokens,
+            admin_vertex_download,
+        ],
+        outputs=[adminVertexDownloadBtn, adminVertexStatus, admin_vertex_download],
     )
 
     adHistoryRefresh.click(
@@ -1575,6 +1968,9 @@ __all__ = [
     "admin_history_generate_evaluation",
     "admin_history_add_comment",
     "admin_history_prepare_download",
+    "admin_classroom_chats_refresh",
+    "admin_download_selected_chats",
+    "admin_generate_vertex_pdf",
     "eval_refresh_dropdown",
     "eval_load",
     "eval_save",
