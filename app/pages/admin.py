@@ -306,7 +306,11 @@ def admin_load_classroom_chats(auth, classrooms, classroom_id, selected_ids=None
     choices = _classroom_dropdown_choices(classrooms)
     valid_ids = [str(cid) for _, cid in choices]
     normalized_id = str(classroom_id) if classroom_id not in (None, "") else None
-    target_id = normalized_id if normalized_id in valid_ids else normalized_id
+    target_id = normalized_id if normalized_id in valid_ids else None
+    if target_id is None and valid_ids:
+        # Keep the currently selected classroom if it's valid; otherwise, fall back to the
+        # first available option so the chat list is never empty when classrooms exist.
+        target_id = valid_ids[0]
 
     try:
         chats = list_all_chats(
